@@ -1,10 +1,13 @@
-name: Build Custom SBC Overlay (mainline kernel)
+name: Build Custom SBC Overlay
 
 # Builds a custom ghcr.io/wheetazlab/sbc-raspberrypi overlay using DTBs from
-# a raspberrypi/linux stable_* tag to match the mainline Talos kernel used by
-# publish.yml.
+# raspberrypi/linux (vendor fork) to match the RPi vendor kernel used by
+# build-kernel.yml and publish.yml.
 #
-# Run this manually whenever you want to refresh the mainline overlay.
+# Uses forward-aware patch logic — patches already upstream in the RPi vendor
+# kernel are skipped automatically; genuinely broken patches fail fast.
+#
+# Run this manually whenever you want to refresh the overlay.
 # Update CUSTOM_OVERLAY_IMAGE in the Makefile to use the new tag.
 
 on:
@@ -15,9 +18,9 @@ on:
         required: false
         default: 'e5ab77462b5ed1ee594ae71f35c0262b51a72524'
       overlay_tag:
-        description: 'Tag for the overlay image (e.g. pr88-mainline-cd1, pr88-mainline-cd2)'
+        description: 'Tag for the overlay image (e.g. pr88-cd1, pr88-cd2)'
         required: false
-        default: 'pr88-mainline-cd4'
+        default: 'pr88-cd5'
       uboot_version:
         description: 'u-boot/u-boot source version (for u-boot-<ver>.tar.bz2)'
         required: false
@@ -31,7 +34,7 @@ on:
         required: false
         default: 'b1f988a497c77da60faf89ed33034e9ae58c4cd7f208e5ce451f1372e13540a66289bee4f08ca2f68f105d73f1ceae058b1f713db549edbcc885d9c66bdc4f8b'
       rpi_dtb_ref:
-        description: 'raspberrypi/linux stable_* tag for mainline DTB packaging'
+        description: 'raspberrypi/linux stable_* tag for DTB packaging'
         required: false
         default: 'stable_20250428'
       rpi_dtb_sha256:
@@ -111,12 +114,16 @@ jobs:
           set -euo pipefail
           cd sbc-raspberrypi
           mkdir -p artifacts/dtb/raspberrypi/patches
+          # Delete sbc-raspberrypi's 0008: it would add mdio{} wrapper which breaks the
+          # RPi vendor RP1 driver (expects flat phy@1 structure). stable_20250428 source
+          # already has flat phy@1 — no patch needed.
+          rm -f artifacts/dtb/raspberrypi/patches/0008-*.patch
           cp -v "${GITHUB_WORKSPACE}/builder/patches/dtb/0011-cm5-sdio1-drop-broken-cd.patch" \
             artifacts/dtb/raspberrypi/patches/0011-cm5-sdio1-drop-broken-cd.patch
 
           # Rewrite the patch loop in pkg.yaml to be forward-aware:
-          #   - forward-applicable -> apply  (mainline: patch not yet present)
-          #   - already applied    -> skip   (patch already in source)
+          #   - forward-applicable -> apply  (patch not yet in source)
+          #   - already applied    -> skip   (already upstreamed in RPi vendor kernel)
           #   - genuinely broken   -> fail   (real context drift)
           awk '
             /patch -p1 < \$patch \|\| \(echo "Failed/ {
@@ -134,7 +141,6 @@ jobs:
             && mv /tmp/pkg.yaml.new artifacts/dtb/raspberrypi/pkg.yaml
 
           # Sanity-check all patches against the actual kernel source.
-          # Uses the same forward-aware logic as the pkg.yaml loop above.
           tmp=$(mktemp -d)
           trap 'rm -rf "${tmp}"' EXIT
           ref="${{ github.event.inputs.rpi_dtb_ref }}"
@@ -177,13 +183,13 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Custom SBC Overlay Built (mainline kernel)" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Custom SBC Overlay Built" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|------|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Source | sidero-community/sbc-raspberrypi @ \`${{ github.event.inputs.pr88_sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| U-Boot | \`${{ github.event.inputs.uboot_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| DTB ref | \`${{ github.event.inputs.rpi_dtb_ref }}\` (mainline stable tag) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| DTB ref | \`${{ github.event.inputs.rpi_dtb_ref }}\` (RPi vendor kernel SHA) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Image | \`ghcr.io/${{ github.repository_owner }}/sbc-raspberrypi:${{ github.event.inputs.overlay_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Update \`CUSTOM_OVERLAY_IMAGE\` in the Makefile to use this new tag." >> "$GITHUB_STEP_SUMMARY"

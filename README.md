@@ -8,7 +8,7 @@ Custom [Talos Linux](https://www.talos.dev/) image builder for **Raspberry Pi CM
 
 Builds a single `rpi_generic` image that works across CM4, CM5, Pi 4, and Pi 5 boards.
 
-The build pipeline is fully self-contained — the kernel (`ghcr.io/wheetazlab/rpi-talos`) is built from source via `build-kernel.yml`, using the standard `siderolabs/pkgs` kernel with three macb ethernet patches imported directly from `siderolabs/pkgs` main at commit [`9a718f6`](https://github.com/siderolabs/pkgs/commit/9a718f6a64aaeb260a9e5182c93817676beff270) (PR #1526 merge). The disk image is assembled by `publish.yml` using that kernel image plus a custom `sbc-raspberrypi` overlay (full BCM2712/RP1 U-Boot with NVMe/PCIe support, unified `rpi_generic` installer), `iscsi-tools`, and `util-linux-tools`.
+The build pipeline is fully self-contained — the kernel (`ghcr.io/wheetazlab/rpi-talos`) is built from source via `build-kernel.yml` using the **Raspberry Pi vendor kernel** (`raspberrypi/linux` rpi-6.18.y, pinned to commit `79dc190b12f9`) in place of the upstream stable kernel. The Pi vendor fork already carries the `net: macb` TX-stall fixes that BCM2712/RP1 needs, so no extra kernel patches are layered on top. The disk image is assembled by `publish.yml` using that kernel image plus a custom `sbc-raspberrypi` overlay (full BCM2712/RP1 U-Boot with NVMe/PCIe support, unified `rpi_generic` installer), `iscsi-tools`, and `util-linux-tools`.
 
 ## Background
 
@@ -34,15 +34,7 @@ The overlay build runs `patch --dry-run` against a fresh `raspberrypi/linux` che
 
 ### macb kernel patches
 
-Three patches are applied to the standard Talos kernel (`patches/linux/`) to fix silent TX stall issues on PCIe-attached macb ethernet (BCM2712/RP1):
-
-| Patch | Fix |
-|-------|-----|
-| `0001` | Flush PCIe posted write after TSTART doorbell |
-| `0002` | Re-check ISR after IER re-enable in `macb_tx_poll` |
-| `0003` | TX stall watchdog — defence-in-depth per-queue `delayed_work` |
-
-These patches address [sbc-raspberrypi#82](https://github.com/siderolabs/sbc-raspberrypi/issues/82) / [sbc-raspberrypi#91](https://github.com/siderolabs/sbc-raspberrypi/issues/91) / [cilium#43198](https://github.com/cilium/cilium/issues/43198). The canonical source used by this repo is [siderolabs/pkgs PR #1526](https://github.com/siderolabs/pkgs/pull/1526) by [@lukaszraczylo](https://github.com/lukaszraczylo), pinned to its merge commit [`9a718f6`](https://github.com/siderolabs/pkgs/commit/9a718f6a64aaeb260a9e5182c93817676beff270) on `main`.
+The macb TX-stall fixes that BCM2712/RP1 boards need (addressing [sbc-raspberrypi#82](https://github.com/siderolabs/sbc-raspberrypi/issues/82) / [sbc-raspberrypi#91](https://github.com/siderolabs/sbc-raspberrypi/issues/91) / [cilium#43198](https://github.com/cilium/cilium/issues/43198)) are already present upstream in `raspberrypi/linux` rpi-6.18.y at the pinned `linux_ref`, so no extra kernel patches are layered on top by this repo. The series originally came from [siderolabs/pkgs PR #1526](https://github.com/siderolabs/pkgs/pull/1526) by [@lukaszraczylo](https://github.com/lukaszraczylo).
 
 ---
 
@@ -80,12 +72,12 @@ Flash Raspberry Pi OS to an SD card, boot from it once (this automatically updat
 
 | Component             | Version / Image |
 |-----------------------|----------------|
-| Talos Linux           | `v1.12.7`      |
-| Linux kernel          | standard `siderolabs/pkgs` mainline kernel + 3 macb patches |
-| SBC overlay           | `ghcr.io/wheetazlab/sbc-raspberrypi:pr88-cd1` (PR #88 + CM5 sdio1 broken-cd drop) |
+| Talos Linux           | `v1.13.0`      |
+| Linux kernel          | `raspberrypi/linux` rpi-6.18.y @ `79dc190b12f9` (Pi vendor fork) |
+| SBC overlay           | `ghcr.io/wheetazlab/sbc-raspberrypi:pr88-cd5` (PR #88 + CM5 sdio1 broken-cd drop) |
 | iscsi-tools extension | `v0.2.0`       |
-| util-linux-tools      | `2.41.2`       |
-| Installer base        | `ghcr.io/wheetazlab/rpi-talos:v1.12.7-k-macb` (built by `build-kernel.yml`) |
+| util-linux-tools      | `2.41.4`       |
+| Installer base        | `ghcr.io/wheetazlab/rpi-talos:v1.13.0-k-rpi` (built by `build-kernel.yml`) |
 
 All versions are configurable — see [Customization](#customization).
 
@@ -103,38 +95,40 @@ All workflow files use `github.repository_owner` for all GHCR paths — they are
 > **Step 2 → `build-overlay.yml`** (custom sbc-raspberrypi overlay with DTB patches)
 > **Step 3 → `publish.yml`** (disk image + installer OCI + GitHub release)
 
-### Step 1 — Build Patched Kernel (`build-kernel.yml`)
+### Step 1 — Build RPi-Kernel Installer Base (`build-kernel.yml`)
 
-Builds the custom installer-base OCI image that `publish.yml` consumes. Run this first whenever you bump Talos or want to update the macb patches.
+Builds the custom installer-base OCI image that `publish.yml` consumes. Run this first whenever you bump Talos or the pinned Pi kernel SHA.
 
 **Pipeline:**
-1. Clones `siderolabs/pkgs` at `PKG_VERSION` (standard upstream kernel, no vendor fork)
-2. Fetches the three macb patches from `siderolabs/pkgs` main at commit `9a718f6` (PR #1526 merge) into the pkgs kernel patch directory
-3. Builds and pushes `ghcr.io/<owner>/kernel:<pkgs-tag>` using pkgs' native patch-and-build
-4. Clones `siderolabs/talos` at `talos_version` (unmodified — no patches needed)
-5. Builds and pushes `installer-base` with `PKG_KERNEL=` pointing to the macb-patched kernel OCI
-6. `crane copy`s to `ghcr.io/<owner>/rpi-talos:<installer_tag>` (e.g. `v1.12.7-k-macb`)
+1. Clones `siderolabs/pkgs` at `PKG_VERSION`
+2. Applies the vendored `patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch` — swaps the kernel source from `cdn.kernel.org` stable to `raspberrypi/linux` rpi-6.18.y at the pinned `linux_ref`
+3. Drops in the Pi-tuned `patches/pkgs/config-arm64-rpi` as `kernel/build/config-arm64`
+4. Builds and pushes `ghcr.io/<owner>/kernel:<pkgs-tag>` using pkgs' native patch-and-build
+5. Clones `siderolabs/talos` at `talos_version` and applies the RPi modules-arm64 patch
+6. Builds and pushes `imager` + `installer-base` with `PKG_KERNEL=` pointing to the Pi-vendor kernel OCI
+7. `crane copy`s to `ghcr.io/<owner>/rpi-talos:<installer_tag>` (e.g. `v1.13.0-k-rpi`)
 
-**Trigger:** Actions → Build Patched Kernel Installer Base → Run workflow
+**Trigger:** Actions → Build RPi-Kernel Installer Base → Run workflow
 
 **Inputs:**
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `talos_version` | `v1.12.7` | Talos branch to build |
-| `pkg_version` | `v1.12.0-58-g86d6af1` | `siderolabs/pkgs` ref (branch, tag, or git-describe) |
-| `pkgs_macb_ref` | `9a718f6a64aaeb260a9e5182c93817676beff270` | `siderolabs/pkgs` commit SHA on `main` containing the three macb patches |
-| `installer_tag` | `v1.12.7-k-macb` | Output image tag |
+| `talos_version` | `v1.13.0` | Talos branch to build |
+| `pkg_version` | `v1.13.0` | `siderolabs/pkgs` ref (must match the vendored Pkgfile patch's base) |
+| `linux_ref` | `79dc190b12f9` | `raspberrypi/linux` short SHA — workflow asserts the vendored patch pins this same ref |
+| `installer_tag` | `v1.13.0-k-rpi` | Output image tag |
 
-Also triggers on push of a `v*-kernel` tag (e.g. `v1.12.7-kernel`).
+Also triggers on push of a `v*-kernel` tag (e.g. `v1.13.0-kernel`).
 
-**After running:** no manual step needed — `CUSTOM_INSTALLER_BASE` in the Makefile already points to the output tag. The summary tab shows the exact image ref to confirm.
+**After running:** the summary tab shows the exact image ref. Set `CUSTOM_INSTALLER_BASE` in `publish.yml` (workflow_dispatch input) or leave it at the default to consume that image.
 
 **Update flow for a new Talos version:**
-1. Update `TALOS_VERSION`, `CUSTOM_INSTALLER_BASE` in `Makefile` and `scripts/build.sh`
-2. Trigger `build-kernel.yml` with the new version inputs
-3. Trigger `build-overlay.yml` if DTB patches or the overlay need updating
-4. Tag + push → `publish.yml` runs automatically
+1. Update `TALOS_VERSION` and the default `CUSTOM_INSTALLER_BASE` in `Makefile`
+2. Update the default `talos_version` / `pkg_version` / `installer_tag` inputs in `build-kernel.yml`
+3. Trigger `build-kernel.yml` with the new version inputs
+4. Trigger `build-overlay.yml` if DTB patches or the overlay need updating
+5. Tag + push → `publish.yml` runs automatically
 
 ### Step 2 — Build Custom Overlay (`build-overlay.yml`)
 
@@ -144,7 +138,7 @@ Manually-triggered workflow that builds and pushes `ghcr.io/<owner>/sbc-raspberr
 
 **Inputs:**
 - `pr88_sha` — commit SHA in `sidero-community/sbc-raspberrypi` (default: PR #88 head)
-- `overlay_tag` — image tag to publish (default: `pr88-cd1`)
+- `overlay_tag` — image tag to publish (default: `pr88-cd5`)
 
 Local DTB patches under [`patches/dtb/`](patches/dtb/) are copied into the overlay's `artifacts/dtb/raspberrypi/patches/` directory before `make sbc-raspberrypi`. They are applied alphabetically along with PR #88's own patches — the `0011-` prefix ensures local patches land after upstream's `0006-` (eMMC slow-down). A `patch --dry-run` against a fresh `raspberrypi/linux` checkout at `RPI_DTB_REF` runs first to fail fast on context drift.
 
@@ -169,7 +163,7 @@ After running, update `CUSTOM_OVERLAY_IMAGE` in the Makefile to the new tag.
 Assembles the disk image and upgrade installer using the pre-built kernel and overlay from Steps 1 and 2. **Do not run this until both prior steps have completed successfully and `CUSTOM_INSTALLER_BASE` / `CUSTOM_OVERLAY_IMAGE` in the Makefile point to the correct tags.**
 
 **Triggers:**
-- Push a version tag (e.g. `git tag v1.12.7 && git push --tags`) → full build + publish
+- Push a version tag (e.g. `git tag v1.13.0 && git push --tags`) → full build + publish
 - Manual run via **Actions → Build and Publish → Run workflow**
 
 **Workflow dispatch inputs:**
@@ -185,7 +179,7 @@ Assembles the disk image and upgrade installer using the pre-built kernel and ov
 2. **`build`** — resolves extension images to digests via `crane digest` for reproducible builds, then:
    - Builds disk image (`make build`)
    - Builds installer OCI (`make installer`)
-   - Pushes installer to GHCR tagged `:vX.Y.Z-talos-rpi`
+   - Pushes installer to GHCR tagged `:vX.Y.Z`
    - Uploads `metal-arm64.raw.xz` as artifact
 3. **`release`** — downloads artifact and creates the GitHub release
 
@@ -236,52 +230,36 @@ make flash-sd DISK=/dev/rdisk4
 
 ## Local Build
 
-### Prerequisites: build kernel + overlay first
+### Prerequisites: build overlay first
 
-`build.sh` / `make build` pull `rpi-talos` and `sbc-raspberrypi` from GHCR. If you haven't pushed them yet (or want to rebuild with new patches), run the local build scripts first:
+`make build` pulls `rpi-talos` and `sbc-raspberrypi` from GHCR. The kernel installer-base is built in CI (`build-kernel.yml`) — there is no local-build script for it. The overlay does have a local script:
 
 ```bash
-# 1. Build macb-patched kernel + installer-base → ghcr.io/<org>/rpi-talos:<tag>
-./scripts/build-kernel.sh
-
-# 2. Build sbc-raspberrypi overlay → ghcr.io/<org>/sbc-raspberrypi:pr88-cd1
+# Build sbc-raspberrypi overlay → ghcr.io/<org>/sbc-raspberrypi:pr88-cd5
 ./scripts/build-overlay.sh
 ```
 
-Both scripts require:
+The script requires:
 - Docker or Podman **logged in** to GHCR (`docker login ghcr.io -u <user>`)
 - `crane` installed (`brew install crane` or `go install github.com/google/go-containerregistry/cmd/crane@latest`)
 
 Override defaults with env vars or flags:
 
 ```bash
-# build-kernel.sh options
-GHCR_ORG=myorg TALOS_VERSION=v1.12.7 PKG_VERSION=v1.12.0-58-g86d6af1 INSTALLER_TAG=v1.12.7-k-macb \
-  ./scripts/build-kernel.sh
-
-# override patch source ref if needed
-GHCR_ORG=myorg TALOS_VERSION=v1.12.7 PKG_VERSION=v1.12.0-58-g86d6af1 PKGS_MACB_REF=9a718f6a64aaeb260a9e5182c93817676beff270 INSTALLER_TAG=v1.12.7-k-macb \
-  ./scripts/build-kernel.sh
-
 # build-overlay.sh options
 GHCR_ORG=myorg OVERLAY_TAG=pr88 ./scripts/build-overlay.sh
 
-# keep Talos kernel as-is, but pin overlay internals for CM5
+# pin overlay internals for CM5
 GHCR_ORG=myorg OVERLAY_TAG=pr88-cm5 \
 UBOOT_VERSION=2026.01 \
 UBOOT_SHA256=b60d5865cefdbc75da8da4156c56c458e00de75a49b80c1a2e58a96e30ad0d54 \
-RPI_DTB_REF=f2f68e79f16f \
+RPI_DTB_REF=stable_20250428 \
 ./scripts/build-overlay.sh
 
-# explicitly control Pi5 one-shot SD poll behavior
-GHCR_ORG=myorg OVERLAY_TAG=pr88-cm5 PI5_SD_POLL_ONCE=true ./scripts/build-overlay.sh
-
-# Both scripts accept --help for full option list
-./scripts/build-kernel.sh --help
 ./scripts/build-overlay.sh --help
 ```
 
-`build-overlay.sh` overrides affect only the `sbc-raspberrypi` overlay (U-Boot + DTBs). They do **not** switch Talos to the Raspberry Pi kernel.
+`build-overlay.sh` overrides affect only the `sbc-raspberrypi` overlay (U-Boot + DTBs). They do **not** switch Talos to a different kernel.
 
 `UBOOT_VERSION`/`UBOOT_SHA*` refer to upstream `u-boot/u-boot` source tarballs (`u-boot-<ver>.tar.bz2` from `ftp.denx.de`), not prebuilt image checksums.
 
@@ -303,10 +281,10 @@ make release      # GitHub release with .raw.xz artifact
 
 ```bash
 # Different Talos version
-make build TALOS_VERSION=v1.12.7
+make build TALOS_VERSION=v1.13.0
 
 # Override overlay image
-make build CUSTOM_OVERLAY_IMAGE=ghcr.io/wheetazlab/sbc-raspberrypi:pr88-cd1
+make build CUSTOM_OVERLAY_IMAGE=ghcr.io/wheetazlab/sbc-raspberrypi:pr88-cd5
 
 # Extra kernel args
 make build EXTRA_KERNEL_ARGS='--extra-kernel-arg=cma=256M --extra-kernel-arg=hugepages=64'
@@ -317,30 +295,10 @@ make build EXTRA_KERNEL_ARGS='--extra-kernel-arg=cma=256M --extra-kernel-arg=hug
 Override the full extension set (replaces defaults):
 
 ```bash
-make build EXTENSIONS="ghcr.io/siderolabs/iscsi-tools:v0.2.0 ghcr.io/siderolabs/util-linux-tools:2.41.2 ghcr.io/siderolabs/gvisor:20260202.0"
-```
-
-Or append a single extra extension on top of defaults via `build.sh`:
-
-```bash
-./scripts/build.sh --extension ghcr.io/siderolabs/gvisor:20260202.0
-```
-
-Multiple `--extension` flags are supported:
-
-```bash
-./scripts/build.sh \
-  --extension ghcr.io/siderolabs/gvisor:20260202.0 \
-  --extension ghcr.io/siderolabs/kata-containers:3.7.0
+make build EXTENSIONS="ghcr.io/siderolabs/iscsi-tools:v0.2.0 ghcr.io/siderolabs/util-linux-tools:2.41.4 ghcr.io/siderolabs/gvisor:20260202.0"
 ```
 
 Browse available extensions: https://github.com/siderolabs/extensions
-
-### Extra kernel args via build.sh
-
-```bash
-./scripts/build.sh --kernel-arg cma=256M --kernel-arg hugepages=64
-```
 
 ### Via workflow dispatch (CI)
 
@@ -364,8 +322,8 @@ make help           Show all targets and version variables
 
 ### What's in the image?
 
-- Talos Linux kernel + initramfs (arm64) — from `ghcr.io/wheetazlab/rpi-talos:v1.12.7-k-macb` (standard `siderolabs/pkgs` mainline kernel, built by `build-kernel.yml` with 3 macb patches applied)
-- **Patched U-Boot** (BCM2712/RP1) from `ghcr.io/wheetazlab/sbc-raspberrypi:pr88` (PR #88 patch set — NVMe/PCIe, EEE LPI, MACB driver)
+- Talos Linux kernel + initramfs (arm64) — from `ghcr.io/wheetazlab/rpi-talos:v1.13.0-k-rpi` (`raspberrypi/linux` rpi-6.18.y vendor fork, built by `build-kernel.yml`)
+- **Patched U-Boot** (BCM2712/RP1) from `ghcr.io/wheetazlab/sbc-raspberrypi:pr88-cd5` (PR #88 patch set — NVMe/PCIe, EEE LPI, MACB driver)
 - DTBs from custom `sbc-raspberrypi` overlay (`rpi_generic` installer):
   - `bcm2711-rpi-4-b.dtb` ← Pi 4 Model B
   - `bcm2711-rpi-cm4.dtb` ← CM4 (CM4IO and compatible carriers)
@@ -376,7 +334,7 @@ make help           Show all targets and version variables
   - `bcm2712-rpi-5-b.dtb`
   - `bcm2712d0-rpi-5-b.dtb`
 - System extension: `iscsi-tools v0.2.0`
-- System extension: `util-linux-tools 2.41.2`
+- System extension: `util-linux-tools 2.41.4`
 - Kernel arg: _(none — single image supports all CM4/CM5/Pi 4/Pi 5 variants)
 
 ---
@@ -404,7 +362,7 @@ talosctl kubeconfig --nodes <CONTROLPLANE_IP> --talosconfig talosconfig
 To upgrade an existing node:
 
 ```bash
-talosctl upgrade --nodes <NODE_IP> --image ghcr.io/wheetazlab/talos-rpi-installer:v1.12.7-k-macb
+talosctl upgrade --nodes <NODE_IP> --image ghcr.io/wheetazlab/talos-rpi-installer:v1.13.0
 ```
 
 ---

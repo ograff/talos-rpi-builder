@@ -1,38 +1,40 @@
-name: Build Patched Kernel Installer Base
+name: Build RPi-Kernel Installer Base
 
-# Builds a custom installer-base OCI image using the standard siderolabs/pkgs
-# kernel with three macb ethernet patches applied on top (PCIe flush, ISR
-# re-check, TX stall watchdog — fixes silent TX stalls on BCM2712/RP1).
+# Builds the installer-base OCI image used by publish.yml, with the
+# Raspberry Pi vendor kernel (raspberrypi/linux rpi-6.18.y) instead of
+# the upstream stable kernel.
 #
-# Output: ghcr.io/wheetazlab/rpi-talos:<installer_tag>
-#   e.g.  ghcr.io/wheetazlab/rpi-talos:v1.12.7-k-macb
+# Why: BCM2712 + RP1 boards (CM5) get thousands of platform fixes only
+# carried in the Pi vendor fork. The macb TX-stall fixes are already
+# present upstream at the pinned linux_ref, so no extra kernel patches
+# are applied here.
 #
-# After a successful run, update CUSTOM_INSTALLER_BASE in the Makefile to use
-# the new image so the main publish workflow picks it up.
+# Output: ghcr.io/<owner>/rpi-talos:<installer_tag>
+#   default tag: v1.13.0-k-rpi
 #
 # Trigger:
-#   - workflow_dispatch  (manual, inputs below)
-#   - push of a tag matching v*-kernel  (e.g. v1.12.7-kernel)
+#   - workflow_dispatch  (manual)
+#   - push of a tag matching v*-kernel  (e.g. v1.13.0-kernel)
 
 on:
   workflow_dispatch:
     inputs:
       talos_version:
-        description: 'Talos version (e.g. v1.12.7)'
+        description: 'Talos version (e.g. v1.13.0)'
         required: false
-        default: 'v1.12.7'
+        default: 'v1.13.0'
       pkg_version:
-        description: 'siderolabs/pkgs ref — branch, tag, or git-describe (e.g. v1.12.0-58-g86d6af1)'
+        description: 'siderolabs/pkgs ref — must match the base of the vendored Pkgfile patch (anchored on tag v1.13.0)'
         required: false
-        default: 'v1.12.0-58-g86d6af1'
-      pkgs_macb_ref:
-        description: 'siderolabs/pkgs commit SHA containing canonical macb patch set (PR #1526 merge: 9a718f6)'
+        default: 'v1.13.0'
+      linux_ref:
+        description: 'raspberrypi/linux short SHA pinned by the vendored Pkgfile patch — workflow asserts the vendored patch matches'
         required: false
-        default: '9a718f6a64aaeb260a9e5182c93817676beff270'
+        default: '79dc190b12f9'
       installer_tag:
-        description: 'Output image tag (e.g. v1.12.7-k-macb)'
+        description: 'Output image tag (e.g. v1.13.0-k-rpi)'
         required: false
-        default: 'v1.12.7-k-macb'
+        default: 'v1.13.0-k-rpi'
       runner:
         description: 'GitHub Actions runner (e.g. ubuntu-24.04-arm, mac-runner)'
         required: false
@@ -95,46 +97,66 @@ jobs:
         id: ver
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            # Tag format: v1.12.7-kernel → extract v1.12.7
+            # Tag format: v1.13.0-kernel → extract v1.13.0
             TAG="${{ github.ref_name }}"
             TALOS_VERSION=$(echo "$TAG" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+')
-            PKG_VERSION="v1.12.0-58-g86d6af1"
-            PKGS_MACB_REF="9a718f6a64aaeb260a9e5182c93817676beff270"
-            INSTALLER_TAG="${TALOS_VERSION}-k-macb"
+            PKG_VERSION="v1.13.0"
+            LINUX_REF="79dc190b12f9"
+            INSTALLER_TAG="${TALOS_VERSION}-k-rpi"
           else
             TALOS_VERSION="${{ github.event.inputs.talos_version }}"
             PKG_VERSION="${{ github.event.inputs.pkg_version }}"
-            PKGS_MACB_REF="${{ github.event.inputs.pkgs_macb_ref }}"
+            LINUX_REF="${{ github.event.inputs.linux_ref }}"
             INSTALLER_TAG="${{ github.event.inputs.installer_tag }}"
           fi
           echo "talos_version=${TALOS_VERSION}" >> "$GITHUB_OUTPUT"
           echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "pkgs_macb_ref=${PKGS_MACB_REF}" >> "$GITHUB_OUTPUT"
+          echo "linux_ref=${LINUX_REF}" >> "$GITHUB_OUTPUT"
           echo "installer_tag=${INSTALLER_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved: Talos=${TALOS_VERSION}  pkgs=${PKG_VERSION}  macb-ref=${PKGS_MACB_REF}  tag=${INSTALLER_TAG}"
+          echo "Resolved: Talos=${TALOS_VERSION}  pkgs=${PKG_VERSION}  linux-ref=${LINUX_REF}  tag=${INSTALLER_TAG}"
 
-      # ── siderolabs/pkgs: standard Talos kernel + macb patches ──────────────
+      - name: Assert vendored Pi-fork patch matches linux_ref
+        run: |
+          set -euo pipefail
+          PATCH=patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+          REF="${{ steps.ver.outputs.linux_ref }}"
+          if ! grep -q "linux_version: ${REF}" "$PATCH"; then
+            echo "ERROR: vendored patch does not pin linux_version to ${REF}" >&2
+            grep -E '^\+.*linux_version:' "$PATCH" >&2 || true
+            exit 1
+          fi
+          echo "OK: vendored patch pins raspberrypi/linux ${REF}"
+
+      # ── siderolabs/pkgs: Pi-vendor kernel ─────────────────────────────────
 
       - name: Clone siderolabs/pkgs
         run: |
           git clone https://github.com/siderolabs/pkgs.git checkouts/pkgs
-          # Resolve git-describe refs (e.g. v1.12.0-58-g86d6af1 → 86d6af1)
+          # Resolve git-describe refs (e.g. v1.13.0-58-g86d6af1 → 86d6af1)
           PKG_REF="${{ steps.ver.outputs.pkg_version }}"
           [[ "$PKG_REF" =~ -[0-9]+-g([0-9a-f]+)$ ]] && PKG_REF="${BASH_REMATCH[1]}"
           git -C checkouts/pkgs -c advice.detachedHead=false checkout "$PKG_REF"
 
-      - name: Import macb kernel patches from pkgs main
+      - name: Apply Pi-fork Pkgfile patch (swap kernel source to raspberrypi/linux)
         run: |
-          # Patches live on siderolabs/pkgs main (PR #1526 merged as 9a718f6).
-          # Fetch main and check out only the three patch files at the pinned SHA.
-          git -C checkouts/pkgs fetch origin main:macb-source
-          git -C checkouts/pkgs checkout ${{ steps.ver.outputs.pkgs_macb_ref }} -- \
-            kernel/build/patches/0001-net-macb-flush-PCIe-posted-write-after-TSTART-doorbe.patch \
-            kernel/build/patches/0002-net-macb-re-check-ISR-after-IER-re-enable-in-macb_tx.patch \
-            kernel/build/patches/0003-net-macb-add-TX-stall-watchdog-as-defence-in-depth-s.patch
-          ls -1 checkouts/pkgs/kernel/build/patches/000*-net-macb-*.patch
+          set -euo pipefail
+          cp patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch checkouts/pkgs/
+          git -C checkouts/pkgs am 0001-Patched-for-Raspberry-Pi-5.patch
+          rm -f checkouts/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+          echo "Pkgfile head after patch:"
+          grep -E '^\s*linux_(version|sha256):' checkouts/pkgs/Pkgfile
 
-      - name: Build kernel (siderolabs/pkgs)
+      - name: Drop in Pi-tuned kernel/build/config-arm64
+        run: |
+          set -euo pipefail
+          install -m 0644 patches/pkgs/config-arm64-rpi checkouts/pkgs/kernel/build/config-arm64
+          echo "config-arm64 head after drop-in:"
+          head -3 checkouts/pkgs/kernel/build/config-arm64
+
+      # macb TX-stall patches are present upstream in raspberrypi/linux at the
+      # pinned linux_ref, so no kernel patches need to be applied on top.
+
+      - name: Build kernel (siderolabs/pkgs, Pi vendor source)
         run: |
           cd checkouts/pkgs
           make \
@@ -149,7 +171,11 @@ jobs:
         run: |
           echo "tag=$(cd checkouts/pkgs && git describe --tag --always --dirty --match 'v[0-9]*')" >> "$GITHUB_OUTPUT"
 
-      # ── siderolabs/talos: installer-base with macb-patched kernel ────────────
+      - name: Publish kernel as kernel-rpi
+        run: |
+          crane copy \
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel:${{ steps.pkgs.outputs.tag }} \
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel-rpi:${{ steps.pkgs.outputs.tag }}
 
       - name: Clone siderolabs/talos
         run: |
@@ -157,25 +183,55 @@ jobs:
             --branch "${{ steps.ver.outputs.talos_version }}" \
             https://github.com/siderolabs/talos.git checkouts/talos
 
+      - name: Apply RPi modules-arm64.txt patch to talos
+        run: |
+          set -euo pipefail
+          cp patches/talos/0001-modules-arm64-rpi.patch checkouts/talos/
+          git -C checkouts/talos am 0001-modules-arm64-rpi.patch
+          rm -f checkouts/talos/0001-modules-arm64-rpi.patch
+          echo "modules-arm64.txt head after patch:"
+          head -5 checkouts/talos/hack/modules-arm64.txt
+
+      - name: Build and push imager (RPi 4K kernel + matching initramfs)
+        run: |
+          cd checkouts/talos
+          make \
+            TAG=${{ steps.ver.outputs.talos_version }}-rpi \
+            REGISTRY=${{ env.REGISTRY }} \
+            USERNAME=${{ env.REGISTRY_USERNAME }} \
+            PUSH=true \
+            PKG_KERNEL=${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel-rpi:${{ steps.pkgs.outputs.tag }} \
+            INSTALLER_ARCH=arm64 \
+            PLATFORM=linux/arm64 \
+            imager
+
       - name: Build and push installer-base
         run: |
           cd checkouts/talos
           make \
-            TAG=${{ steps.ver.outputs.talos_version }} \
+            TAG=${{ steps.ver.outputs.talos_version }}-rpi \
             REGISTRY=${{ env.REGISTRY }} \
             USERNAME=${{ env.REGISTRY_USERNAME }} \
             PUSH=true \
-            PKG_KERNEL=${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel:${{ steps.pkgs.outputs.tag }} \
+            PKG_KERNEL=${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel-rpi:${{ steps.pkgs.outputs.tag }} \
             INSTALLER_ARCH=arm64 \
             PLATFORM=linux/arm64 \
             installer-base
+
+      # The imager target publishes as imager:<tag>-rpi; rename to imager-rpi:<tag>-rpi
+      # so publish.yml can reference a stable name independent of the talos tag.
+      - name: Tag imager as imager-rpi
+        run: |
+          crane copy \
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager:${{ steps.ver.outputs.talos_version }}-rpi \
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ steps.ver.outputs.talos_version }}-rpi
 
       # ── Publish under stable rpi-talos name ───────────────────────────────
 
       - name: Publish as rpi-talos
         run: |
           crane copy \
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/installer-base:${{ steps.ver.outputs.talos_version }} \
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/installer-base:${{ steps.ver.outputs.talos_version }}-rpi \
             ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ steps.ver.outputs.installer_tag }}
 
       - name: Postflight BuildKit cleanup
@@ -190,16 +246,15 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Patched Kernel Installer Base Built" >> "$GITHUB_STEP_SUMMARY"
+          echo "## RPi-Kernel Installer Base Built" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| | |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Talos | \`${{ steps.ver.outputs.talos_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| pkgs | \`${{ steps.ver.outputs.pkg_version }}\` @ \`${{ steps.pkgs.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| macb patch source | \`siderolabs/pkgs@${{ steps.ver.outputs.pkgs_macb_ref }}\` (PR #1526 merge) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| kernel | standard siderolabs/pkgs (mainline stable) + 3 macb patches (PR #1526) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| kernel OCI | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel:${{ steps.pkgs.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| installer-base | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/installer-base:${{ steps.ver.outputs.talos_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **rpi-talos (use this)** | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ steps.ver.outputs.installer_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| kernel source | \`raspberrypi/linux\` rpi-6.18.y @ \`${{ steps.ver.outputs.linux_ref }}\` (vendored Pkgfile patch) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| macb patches | none — fixes already upstream in raspberrypi/linux at pinned ref |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Installer base | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ steps.ver.outputs.installer_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Patched imager | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ steps.ver.outputs.talos_version }}-rpi\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Set in Makefile: \`CUSTOM_INSTALLER_BASE ?= ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ steps.ver.outputs.installer_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "publish.yml will use the patched imager automatically (kernel comes from inside the imager, not installer-base)." >> "$GITHUB_STEP_SUMMARY"

@@ -1,5 +1,13 @@
 name: Build and Publish Talos CM4/CM5 Image
 
+# Builds the Talos disk image + installer using the RPi-vendor-kernel
+# installer base produced by build-kernel.yml, plus the custom
+# sbc-raspberrypi overlay produced by build-overlay.yml.
+#
+# Trigger:
+#   - workflow_dispatch (manual)
+#   - push of a tag matching v* (e.g. v1.13.0)
+
 on:
   push:
     tags:
@@ -7,13 +15,13 @@ on:
   workflow_dispatch:
     inputs:
       talos_version:
-        description: 'Base Talos version (e.g. v1.12.7)'
+        description: 'Base Talos version (e.g. v1.13.0)'
         required: false
-        default: 'v1.12.7'
+        default: 'v1.13.0'
       installer_base:
-        description: 'Custom installer-base image. Default = mainline kernel + 4K (-k-macb). Use publish-rpi.yml for Pi-vendor + 16K.'
+        description: 'RPi-kernel installer base produced by build-kernel.yml'
         required: false
-        default: 'ghcr.io/wheetazlab/rpi-talos:v1.12.7-k-macb'
+        default: 'ghcr.io/wheetazlab/rpi-talos:v1.13.0-k-rpi'
       extra_kernel_args:
         description: 'Extra kernel args — space-separated key=value pairs (e.g. cma=256M hugepages=64)'
         required: false
@@ -31,6 +39,10 @@ env:
   # Default extensions baked into the installer — resolved to digests at build time
   EXTENSION_ISCSI_IMAGE: ghcr.io/siderolabs/iscsi-tools:v0.2.0
   EXTENSION_UTIL_LINUX_IMAGE: ghcr.io/siderolabs/util-linux-tools:2.41.4
+  # raspberrypi/linux rpi-6.18.y at the pinned linux_ref.
+  RPI_LINUX_KERNEL_VERSION: 'raspberrypi/linux rpi-6.18.y @ 79dc190b12f9'
+  # Default installer base when triggered by tag push (no workflow_dispatch input).
+  RPI_INSTALLER_BASE_DEFAULT: 'ghcr.io/wheetazlab/rpi-talos:v1.13.0-k-rpi'
 
 jobs:
   # ── Resolve the Talos version once and share it across all jobs ─────────────
@@ -38,7 +50,7 @@ jobs:
     runs-on: ${{ inputs.runner || 'ubuntu-24.04-arm' }}
     outputs:
       talos_version: ${{ steps.version.outputs.version }}
-      patched_release_tag: ${{ steps.version.outputs.patched_release_tag }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
       installer_base: ${{ steps.version.outputs.installer_base }}
       overlay_image: ${{ steps.version.outputs.overlay_image }}
       linux_kernel_version: ${{ steps.version.outputs.linux_kernel_version }}
@@ -69,6 +81,7 @@ jobs:
       - name: Resolve Talos version and metadata
         id: version
         run: |
+          set -euo pipefail
           if [[ -n "${{ github.event.inputs.talos_version }}" ]]; then
             VERSION="${{ github.event.inputs.talos_version }}"
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
@@ -77,19 +90,22 @@ jobs:
             VERSION=$(grep '^TALOS_VERSION' Makefile | awk '{print $NF}')
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "patched_release_tag=${VERSION}-talos-rpi" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${VERSION}" >> "$GITHUB_OUTPUT"
+
           ISCSI=$(grep '^ISCSI_TOOLS_VERSION' Makefile | awk '{print $NF}')
           UTIL=$(grep '^UTIL_LINUX_VERSION' Makefile | awk '{print $NF}')
-          LINUX=$(grep '^LINUX_KERNEL_VERSION' Makefile | awk '{print $NF}')
-          # installer_base: workflow input wins; tag-push falls back to mainline default
-          if [[ -n "${{ github.event.inputs.installer_base }}" ]]; then
-            INSTALLER_BASE="${{ github.event.inputs.installer_base }}"
-          else
-            INSTALLER_BASE="ghcr.io/wheetazlab/rpi-talos:${VERSION}-k-macb"
-          fi
           OVERLAY_IMAGE=$(grep '^CUSTOM_OVERLAY_IMAGE' Makefile | awk '{print $NF}')
+
+          # Installer base: workflow_dispatch input wins, else env default.
+          INSTALLER_BASE_INPUT="${{ github.event.inputs.installer_base }}"
+          if [[ -n "${INSTALLER_BASE_INPUT}" ]]; then
+            INSTALLER_BASE="${INSTALLER_BASE_INPUT}"
+          else
+            INSTALLER_BASE="${RPI_INSTALLER_BASE_DEFAULT}"
+          fi
+
           echo "overlay_image=${OVERLAY_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "linux_kernel_version=${LINUX}" >> "$GITHUB_OUTPUT"
+          echo "linux_kernel_version=${RPI_LINUX_KERNEL_VERSION}" >> "$GITHUB_OUTPUT"
           echo "installer_base=${INSTALLER_BASE}" >> "$GITHUB_OUTPUT"
           echo "iscsi_version=${ISCSI}" >> "$GITHUB_OUTPUT"
           echo "util_version=${UTIL}" >> "$GITHUB_OUTPUT"
@@ -97,7 +113,7 @@ jobs:
           echo "extra_extensions=${{ github.event.inputs.extra_extensions }}" >> "$GITHUB_OUTPUT"
 
 
-  # ── Build image + installer ────────────────────────────────────────────────────────────────────└
+  # ── Build image + installer ─────────────────────────────────────────────────
   build:
     runs-on: ${{ inputs.runner || 'ubuntu-24.04-arm' }}
     needs: [resolve-version]
@@ -107,7 +123,7 @@ jobs:
     env:
       DOCKER: docker
       TALOS_VERSION: ${{ needs.resolve-version.outputs.talos_version }}
-      PATCHED_RELEASE_TAG: ${{ needs.resolve-version.outputs.patched_release_tag }}
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
       REGISTRY: ghcr.io
       REGISTRY_USERNAME: ${{ github.repository_owner }}
     steps:
@@ -190,7 +206,7 @@ jobs:
             -v /dev:/dev
             --privileged
             -v talos-image-out:/out
-            "ghcr.io/siderolabs/imager:${TALOS_VERSION}"
+            "ghcr.io/${REGISTRY_USERNAME}/imager-rpi:${TALOS_VERSION}-rpi"
             rpi_generic
             "--base-installer-image=${{ needs.resolve-version.outputs.installer_base }}"
             "--overlay-image=${{ steps.overlay.outputs.image }}"
@@ -227,7 +243,7 @@ jobs:
             -v /dev:/dev
             --privileged
             -v talos-installer-out:/out
-            "ghcr.io/siderolabs/imager:${TALOS_VERSION}"
+            "ghcr.io/${REGISTRY_USERNAME}/imager-rpi:${TALOS_VERSION}-rpi"
             installer
             "--base-installer-image=${{ needs.resolve-version.outputs.installer_base }}"
             "--overlay-image=${{ steps.overlay.outputs.image }}"
@@ -244,9 +260,8 @@ jobs:
 
           docker volume rm talos-installer-out
 
-          # Push via crane (already authenticated)
           crane push /tmp/installer.tar \
-            ghcr.io/${{ env.REGISTRY_USERNAME }}/talos-rpi-installer:${{ env.PATCHED_RELEASE_TAG }}
+            ghcr.io/${{ env.REGISTRY_USERNAME }}/talos-rpi-installer:${{ env.RELEASE_TAG }}
 
       - name: Upload disk image
         uses: actions/upload-artifact@v4
@@ -272,7 +287,7 @@ jobs:
       contents: write
     env:
       TALOS_VERSION: ${{ needs.resolve-version.outputs.talos_version }}
-      PATCHED_RELEASE_TAG: ${{ needs.resolve-version.outputs.patched_release_tag }}
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
       INSTALLER_BASE: ${{ needs.resolve-version.outputs.installer_base }}
       OVERLAY_IMAGE: ${{ needs.resolve-version.outputs.overlay_image }}
       LINUX_KERNEL_VERSION: ${{ needs.resolve-version.outputs.linux_kernel_version }}
@@ -309,30 +324,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           NOTES=$(cat <<'EOF'
-          > ⚠️ Experimental build — use at your own risk.
+          Patched Talos build for **Raspberry Pi CM4, CM5, Pi 4, and Pi 5** boards — built on the **`raspberrypi/linux` rpi-6.18.y vendor fork** for BCM2712/RP1 platform support.
 
-          Patched Talos build for **Raspberry Pi CM4, CM5, Pi 4, and Pi 5** boards.
+          Combines three layers on top of upstream Talos ${{ env.TALOS_VERSION }}:
 
-          A **single unified `metal-arm64.raw.xz`** that boots on CM4, CM5, Pi 4, *and* Pi 5 — same kernel, same initramfs, same DTB set, no per-board variants. This is made possible by [@appkins](https://github.com/appkins)'s [siderolabs/sbc-raspberrypi PR #88](https://github.com/siderolabs/sbc-raspberrypi/pull/88), which collapses BCM2711 (CM4/Pi 4) and BCM2712 (CM5/Pi 5) support into one `rpi_generic` installer.
-
-          Combines four independent layers on top of upstream Talos ${{ env.TALOS_VERSION }}:
-
-          1. **Custom Linux kernel** (`${{ env.LINUX_KERNEL_VERSION }}`) — standard `siderolabs/pkgs` mainline kernel rebuilt with three `net: macb` patches targeting the BCM2712 PCIe Ethernet controller (patches by [@lukaszraczylo](https://github.com/lukaszraczylo), merged into `siderolabs/pkgs` as [PR #1526](https://github.com/siderolabs/pkgs/pull/1526) at commit [`9a718f6`](https://github.com/siderolabs/pkgs/commit/9a718f6a64aaeb260a9e5182c93817676beff270); addresses [sbc-raspberrypi#82](https://github.com/siderolabs/sbc-raspberrypi/issues/82) / [sbc-raspberrypi#91](https://github.com/siderolabs/sbc-raspberrypi/issues/91) / [cilium#43198](https://github.com/cilium/cilium/issues/43198)):
-             - `net: macb: flush PCIe posted write after TSTART doorbell` — prevents TX hangs caused by posted-write reordering across the PCIe bridge.
-             - `net: macb: re-check ISR after IER re-enable in macb_tx_poll` — closes a race window where a TX interrupt fires between ISR read and IER re-enable, masking the event.
-             - `net: macb: add TX stall watchdog` — defence-in-depth safety net that kicks the TX path if all three patches fail to prevent a stall in a given edge case.
-          2. **`rpi_generic` SBC overlay** (`${{ env.OVERLAY_IMAGE }}`, [siderolabs/sbc-raspberrypi PR #88](https://github.com/siderolabs/sbc-raspberrypi/pull/88) by [@appkins](https://github.com/appkins)) — U-Boot + RP1/BCM2712 device-tree support enabling NVMe boot, CM4IO/CM5IO carrier boards, and Pi 5 single-board form factor.
-          3. **CM5 SD card-detect DTB patch** — drops `broken-cd;` from the `&sdio1` node in `bcm2712-rpi-cm5.dtsi` (injected at overlay build time as `0011-cm5-sdio1-drop-broken-cd.patch`). Upstream `broken-cd;` forces `MMC_CAP_NEEDS_POLL`, which prevents `mmc_rescan()` from short-circuiting on an empty microSD slot and produces a perpetual `mmc0: Timeout waiting for hardware cmd interrupt` log loop on NVMe-only boots. The BCM2712 SDHCI controller's native `SDHCI_CARD_PRESENT` bit and `CARD_INSERT/REMOVE` interrupts handle empty-slot quiet and hot-insert correctly without `broken-cd`. Verified on CM4IO, CM5IO, and DeskPi Super6C.
-          4. **Extensions** — `iscsi-tools` (iSCSI initiator for Longhorn/OpenEBS) and `util-linux-tools` (loopback/filesystem utilities) baked in at digest-pinned versions.
+          1. **Pi vendor kernel** (`${{ env.LINUX_KERNEL_VERSION }}`) — `raspberrypi/linux` rpi-6.18.y, which already carries the `net: macb` TX-stall fixes that address [sbc-raspberrypi#82](https://github.com/siderolabs/sbc-raspberrypi/issues/82) / [sbc-raspberrypi#91](https://github.com/siderolabs/sbc-raspberrypi/issues/91) / [cilium#43198](https://github.com/cilium/cilium/issues/43198).
+          2. **`rpi_generic` SBC overlay** (`${{ env.OVERLAY_IMAGE }}`, [siderolabs/sbc-raspberrypi PR #88](https://github.com/siderolabs/sbc-raspberrypi/pull/88) by [@appkins](https://github.com/appkins)) — U-Boot + RP1/BCM2712 device-tree support enabling NVMe boot, CM4IO/CM5IO carriers, and Pi 5 single-board form factor. Plus a local CM5 SD card-detect DTB patch that drops `broken-cd;` from the `&sdio1` node to silence empty-slot probe loops on NVMe-only boots.
+          3. **Extensions** — `iscsi-tools` and `util-linux-tools` baked in at digest-pinned versions.
 
           ### Components
 
           | Component | Version / Image |
           |-----------|------------------|
           | Talos | `${{ env.TALOS_VERSION }}` |
-          | Imager | `ghcr.io/siderolabs/imager:${{ env.TALOS_VERSION }}` |
-          | Installer base | `${{ env.INSTALLER_BASE }}` |
-          | Kernel | Linux ${{ env.LINUX_KERNEL_VERSION }} (3× macb PCIe patches) |
+          | Imager | `ghcr.io/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ env.TALOS_VERSION }}-rpi` (patched — RPi 16K kernel) |
+          | Installer base | `${{ env.INSTALLER_BASE }}` (RPi vendor kernel — built by `build-kernel.yml`) |
+          | Kernel | ${{ env.LINUX_KERNEL_VERSION }} |
           | SBC overlay | `${{ env.OVERLAY_IMAGE }}` (rpi_generic — PR #88 + CM5 sdio1 broken-cd drop) |
           | iscsi-tools | `ghcr.io/siderolabs/iscsi-tools:${{ env.ISCSI_VERSION }}` |
           | util-linux-tools | `ghcr.io/siderolabs/util-linux-tools:${{ env.UTIL_VERSION }}` |
@@ -347,7 +354,7 @@ jobs:
           ### What's available
 
           - 📦 **`metal-arm64.raw.xz`** — disk image for CM4/CM5/Pi 4/Pi 5
-          - ⚙️  **Installer:** `${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/talos-rpi-installer:${{ env.PATCHED_RELEASE_TAG }}`
+          - ⚙️  **Installer:** `${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/talos-rpi-installer:${{ env.RELEASE_TAG }}`
 
           ### Install
 
@@ -357,15 +364,15 @@ jobs:
 
           - **Upgrade existing node**
             ```bash
-            talosctl upgrade --nodes <NODE_IP> --image ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/talos-rpi-installer:${{ env.PATCHED_RELEASE_TAG }}
+            talosctl upgrade --nodes <NODE_IP> --image ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/talos-rpi-installer:${{ env.RELEASE_TAG }}
             ```
 
           EOF
           )
-          gh release delete ${{ env.PATCHED_RELEASE_TAG }} --yes 2>/dev/null || true
+          gh release delete ${{ env.RELEASE_TAG }} --yes 2>/dev/null || true
           gh release create \
-            ${{ env.PATCHED_RELEASE_TAG }} \
+            ${{ env.RELEASE_TAG }} \
             ./_out/metal-arm64.raw.xz \
-            --title "${{ env.PATCHED_RELEASE_TAG }}" \
+            --title "${{ env.RELEASE_TAG }}" \
             $([[ "${{ env.TALOS_VERSION }}" =~ -(alpha|beta|rc)\. ]] && echo "--prerelease") \
             --notes "$NOTES"
