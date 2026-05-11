@@ -39,6 +39,8 @@ env:
   # Default extensions baked into the installer — resolved to digests at build time
   EXTENSION_ISCSI_IMAGE: ghcr.io/siderolabs/iscsi-tools:v0.2.0
   EXTENSION_UTIL_LINUX_IMAGE: ghcr.io/siderolabs/util-linux-tools:2.41.4
+  EXTENSION_NVME_CLI_IMAGE: ghcr.io/siderolabs/nvme-cli:v2.14
+  EXTENSION_TAILSCALE_IMAGE: ghcr.io/siderolabs/tailscale:1.96.4
   # raspberrypi/linux rpi-6.18.y at the pinned linux_ref.
   RPI_LINUX_KERNEL_VERSION: 'raspberrypi/linux rpi-6.18.y @ 79dc190b12f9'
   # Default installer base when triggered by tag push (no workflow_dispatch input).
@@ -56,6 +58,8 @@ jobs:
       linux_kernel_version: ${{ steps.version.outputs.linux_kernel_version }}
       iscsi_version: ${{ steps.version.outputs.iscsi_version }}
       util_version: ${{ steps.version.outputs.util_version }}
+      nvme_cli_version: ${{ steps.version.outputs.nvme_cli_version }}
+      tailscale_version: ${{ steps.version.outputs.tailscale_version }}
       extra_kernel_args: ${{ steps.version.outputs.extra_kernel_args }}
       extra_extensions: ${{ steps.version.outputs.extra_extensions }}
     steps:
@@ -94,6 +98,8 @@ jobs:
 
           ISCSI=$(grep '^ISCSI_TOOLS_VERSION' Makefile | awk '{print $NF}')
           UTIL=$(grep '^UTIL_LINUX_VERSION' Makefile | awk '{print $NF}')
+          NVME=$(grep '^NVME_CLI_VERSION' Makefile | awk '{print $NF}')
+          TAILSCALE=$(grep '^TAILSCALE_VERSION' Makefile | awk '{print $NF}')
           OVERLAY_IMAGE=$(grep '^CUSTOM_OVERLAY_IMAGE' Makefile | awk '{print $NF}')
 
           # Installer base: workflow_dispatch input wins, else env default.
@@ -109,6 +115,8 @@ jobs:
           echo "installer_base=${INSTALLER_BASE}" >> "$GITHUB_OUTPUT"
           echo "iscsi_version=${ISCSI}" >> "$GITHUB_OUTPUT"
           echo "util_version=${UTIL}" >> "$GITHUB_OUTPUT"
+          echo "nvme_cli_version=${NVME}" >> "$GITHUB_OUTPUT"
+          echo "tailscale_version=${TAILSCALE}" >> "$GITHUB_OUTPUT"
           echo "extra_kernel_args=${{ github.event.inputs.extra_kernel_args }}" >> "$GITHUB_OUTPUT"
           echo "extra_extensions=${{ github.event.inputs.extra_extensions }}" >> "$GITHUB_OUTPUT"
 
@@ -163,7 +171,7 @@ jobs:
           EXTRA_EXTENSIONS: ${{ needs.resolve-version.outputs.extra_extensions }}
         run: |
           RESOLVED=""
-          for IMAGE in ${EXTENSION_ISCSI_IMAGE} ${EXTENSION_UTIL_LINUX_IMAGE} ${EXTRA_EXTENSIONS}; do
+          for IMAGE in ${EXTENSION_ISCSI_IMAGE} ${EXTENSION_UTIL_LINUX_IMAGE} ${EXTENSION_NVME_CLI_IMAGE} ${EXTENSION_TAILSCALE_IMAGE} ${EXTRA_EXTENSIONS}; do
             DIGEST=$(crane digest "${IMAGE}")
             RESOLVED="${RESOLVED} ${IMAGE}@${DIGEST}"
           done
@@ -293,6 +301,8 @@ jobs:
       LINUX_KERNEL_VERSION: ${{ needs.resolve-version.outputs.linux_kernel_version }}
       ISCSI_VERSION: ${{ needs.resolve-version.outputs.iscsi_version }}
       UTIL_VERSION: ${{ needs.resolve-version.outputs.util_version }}
+      NVME_CLI_VERSION: ${{ needs.resolve-version.outputs.nvme_cli_version }}
+      TAILSCALE_VERSION: ${{ needs.resolve-version.outputs.tailscale_version }}
       REGISTRY: ghcr.io
       REGISTRY_USERNAME: ${{ github.repository_owner }}
       GH_REPO: ${{ github.repository }}
@@ -343,6 +353,8 @@ jobs:
           | SBC overlay | `${{ env.OVERLAY_IMAGE }}` (rpi_generic — PR #88 + CM5 sdio1 broken-cd drop) |
           | iscsi-tools | `ghcr.io/siderolabs/iscsi-tools:${{ env.ISCSI_VERSION }}` |
           | util-linux-tools | `ghcr.io/siderolabs/util-linux-tools:${{ env.UTIL_VERSION }}` |
+          | nvme-cli | `ghcr.io/siderolabs/nvme-cli:${{ env.NVME_CLI_VERSION }}` |
+          | tailscale | `ghcr.io/siderolabs/tailscale:${{ env.TAILSCALE_VERSION }}` |
 
           ### Supported boards
 

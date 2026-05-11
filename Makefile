@@ -7,6 +7,8 @@
 TALOS_VERSION        ?= v1.13.0
 ISCSI_TOOLS_VERSION  ?= v0.2.0
 UTIL_LINUX_VERSION   ?= 2.41.4
+NVME_CLI_VERSION     ?= v2.14
+TAILSCALE_VERSION    ?= 1.96.4
 # CUSTOM_INSTALLER_BASE: defined in .github/workflows/publish.yml as workflow_dispatch input.
 #   Default there = ghcr.io/wheetazlab/rpi-talos:<TALOS_VERSION>-k-rpi (Pi-vendor kernel + 16K).
 CUSTOM_OVERLAY_IMAGE ?= ghcr.io/wheetazlab/sbc-raspberrypi:pr88-cd5
@@ -43,11 +45,13 @@ INSTALLER_BASE      := $(if $(CUSTOM_INSTALLER_BASE),$(CUSTOM_INSTALLER_BASE),gh
 OVERLAY_IMAGE       := $(CUSTOM_OVERLAY_IMAGE)
 ISCSI_TOOLS_IMAGE   := ghcr.io/siderolabs/iscsi-tools:$(ISCSI_TOOLS_VERSION)
 UTIL_LINUX_IMAGE    := ghcr.io/siderolabs/util-linux-tools:$(UTIL_LINUX_VERSION)
+NVME_CLI_IMAGE      := ghcr.io/siderolabs/nvme-cli:$(NVME_CLI_VERSION)
+TAILSCALE_IMAGE     := ghcr.io/siderolabs/tailscale:$(TAILSCALE_VERSION)
 
-# Extensions — defaults are iscsi-tools + util-linux-tools.
+# Extensions — defaults are iscsi-tools, util-linux-tools, nvme-cli, tailscale.
 # Override with EXTENSIONS="img1 img2 ..." for arbitrary/digest-pinned refs.
 # In CI, digest-resolved values are injected by the publish workflow.
-EXTENSIONS          ?= $(ISCSI_TOOLS_IMAGE) $(UTIL_LINUX_IMAGE)
+EXTENSIONS          ?= $(ISCSI_TOOLS_IMAGE) $(UTIL_LINUX_IMAGE) $(NVME_CLI_IMAGE) $(TAILSCALE_IMAGE)
 override EXTENSIONS := $(shell echo "$(EXTENSIONS)")
 EXTENSION_ARGS      := $(foreach ext,$(EXTENSIONS),--system-extension-image=$(ext))
 
@@ -131,7 +135,7 @@ release:
 	gh release create $(TAG) $(XZ_IMAGE) \
 		--repo $(GH_REPO) \
 		--title "Talos $(TALOS_VERSION) for Raspberry Pi CM5" \
-             --notes "Custom Talos Linux image for Raspberry Pi CM4/CM5/Pi 4/Pi 5 (rpi_generic overlay — CM4IO/CM5IO/Pi 4/Pi 5 compatible).\n\nIncludes:\n- sbc-raspberrypi overlay: $(CUSTOM_OVERLAY_IMAGE) (PR #88 + CM5 sdio1 broken-cd drop)\n- iscsi-tools: $(ISCSI_TOOLS_VERSION)\n- util-linux-tools: $(UTIL_LINUX_VERSION)\n\nInstaller image: $(GHCR_IMAGE)\n\nFlash with:\n\`\`\`\nxzcat metal-$(ARCH).raw.xz | sudo dd of=/dev/rdiskN bs=4m\n\`\`\`"
+             --notes "Custom Talos Linux image for Raspberry Pi CM4/CM5/Pi 4/Pi 5 (rpi_generic overlay — CM4IO/CM5IO/Pi 4/Pi 5 compatible).\n\nIncludes:\n- sbc-raspberrypi overlay: $(CUSTOM_OVERLAY_IMAGE) (PR #88 + CM5 sdio1 broken-cd drop)\n- iscsi-tools: $(ISCSI_TOOLS_VERSION)\n- util-linux-tools: $(UTIL_LINUX_VERSION)\n- nvme-cli: $(NVME_CLI_VERSION)\n- tailscale: $(TAILSCALE_VERSION)\n\nInstaller image: $(GHCR_IMAGE)\n\nFlash with:\n\`\`\`\nxzcat metal-$(ARCH).raw.xz | sudo dd of=/dev/rdiskN bs=4m\n\`\`\`"
 	@echo "==> Release created!"
 
 ## publish: Full pipeline — build image, build installer, push to GHCR, create release
@@ -155,6 +159,8 @@ pull-images:
 	$(DOCKER) pull $(OVERLAY_IMAGE)
 	$(DOCKER) pull $(ISCSI_TOOLS_IMAGE)
 	$(DOCKER) pull $(UTIL_LINUX_IMAGE)
+	$(DOCKER) pull $(NVME_CLI_IMAGE)
+	$(DOCKER) pull $(TAILSCALE_IMAGE)
 
 $(OUT_DIR):
 	mkdir -p $(OUT_DIR)
@@ -174,6 +180,8 @@ help:
 	@echo "  TALOS_VERSION         = $(TALOS_VERSION)"
 	@echo "  ISCSI_TOOLS_VERSION   = $(ISCSI_TOOLS_VERSION)"
 	@echo "  UTIL_LINUX_VERSION    = $(UTIL_LINUX_VERSION)"
+	@echo "  NVME_CLI_VERSION      = $(NVME_CLI_VERSION)"
+	@echo "  TAILSCALE_VERSION     = $(TAILSCALE_VERSION)"
 	@echo "  EXTENSIONS            = $(EXTENSIONS)"
 	@echo "  EXTRA_KERNEL_ARGS     = $(EXTRA_KERNEL_ARGS)"
 	@echo "  ARCH                  = $(ARCH)"
