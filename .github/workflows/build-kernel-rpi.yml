@@ -1,12 +1,11 @@
 name: Build RPi-Kernel Installer Base (vendor fork)
 
 # Builds a custom installer-base OCI image using the Raspberry Pi vendor
-# kernel (raspberrypi/linux rpi-6.18.y) instead of mainline siderolabs/linux,
-# with the same three macb ethernet patches applied on top.
+# kernel (raspberrypi/linux rpi-6.18.y) instead of mainline siderolabs/linux.
 #
 # Why: BCM2712 + RP1 boards (CM5) get thousands of platform fixes only carried
-# in the Pi vendor fork. The mainline-based build is the same patches but on
-# a kernel tree that doesn't know about RP1 quirks.
+# in the Pi vendor fork. The macb TX-stall fixes are already present upstream
+# at the pinned linux_ref, so no extra kernel patches are applied here.
 #
 # Output: ghcr.io/wheetazlab/rpi-talos:<installer_tag>
 #   default tag: v1.12.7-k-rpi-macb
@@ -32,7 +31,7 @@ on:
       linux_ref:
         description: 'raspberrypi/linux short SHA pinned by the vendored Pkgfile patch — workflow asserts the vendored patch matches'
         required: false
-        default: 'f2f68e79f16f'
+        default: '79dc190b12f9'
       installer_tag:
         description: 'Output image tag (e.g. v1.12.7-k-rpi-macb)'
         required: false
@@ -103,7 +102,7 @@ jobs:
             TAG="${{ github.ref_name }}"
             TALOS_VERSION=$(echo "$TAG" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+')
             PKG_VERSION="v1.12.0"
-            LINUX_REF="f2f68e79f16f"
+            LINUX_REF="79dc190b12f9"
             INSTALLER_TAG="${TALOS_VERSION}-k-rpi-macb"
           else
             TALOS_VERSION="${{ github.event.inputs.talos_version }}"
@@ -148,21 +147,8 @@ jobs:
           echo "Pkgfile head after patch:"
           grep -E '^\s*linux_(version|sha256):' checkouts/pkgs/Pkgfile
 
-      - name: Copy vendored macb kernel patches into pkgs tree
-        run: |
-          # Patches vendored under patches/pkgs/kernel-rpi/ — fork-anchored
-          # versions from lukaszraczylo/talos-builder (same series as netdev
-          # RFC, but patch 3 is anchored on raspberrypi/linux rpi-6.18.y which
-          # has an extra `bool tx_pending` field on `struct macb_queue` not
-          # present in mainline). Required when kernel source is the Pi fork.
-          set -euo pipefail
-          install -m 0644 \
-            patches/pkgs/kernel-rpi/0001-net-macb-flush-PCIe-posted-write-after-TSTART-doorbe.patch \
-            patches/pkgs/kernel-rpi/0002-net-macb-re-check-ISR-after-IER-re-enable-in-macb_tx.patch \
-            patches/pkgs/kernel-rpi/0003-net-macb-add-TX-stall-watchdog-to-recover-from-lost-.patch \
-            patches/pkgs/kernel-rpi/0004-net-macb-track-TX-tail-movement-via-boolean.patch \
-            checkouts/pkgs/kernel/build/patches/
-          ls -1 checkouts/pkgs/kernel/build/patches/000*.patch
+      # macb TX-stall patches are present upstream in raspberrypi/linux at the
+      # pinned linux_ref, so no kernel patches need to be applied on top.
 
       - name: Build kernel (siderolabs/pkgs, Pi vendor source)
         run: |
@@ -261,7 +247,7 @@ jobs:
           echo "| Talos | \`${{ steps.ver.outputs.talos_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| pkgs | \`${{ steps.ver.outputs.pkg_version }}\` @ \`${{ steps.pkgs.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| kernel source | \`raspberrypi/linux\` rpi-6.18.y @ \`${{ steps.ver.outputs.linux_ref }}\` (vendored Pkgfile patch) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| macb patch source | \`lukaszraczylo/talos-builder/patches/linux\` (fork-anchored, vendored) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| macb patches | none — fixes already upstream in raspberrypi/linux at pinned ref |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Installer base | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ steps.ver.outputs.installer_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Patched imager | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ steps.ver.outputs.talos_version }}-rpi\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
