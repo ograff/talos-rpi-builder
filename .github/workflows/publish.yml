@@ -22,6 +22,10 @@ on:
         description: 'RPi-kernel installer base produced by build-kernel.yml'
         required: false
         default: 'ghcr.io/wheetazlab/rpi-talos:v1.13.0-k-rpi'
+      overlay_image:
+        description: 'sbc-raspberrypi overlay image produced by build-overlay.yml (leave blank to use Makefile default)'
+        required: false
+        default: ''
       extra_kernel_args:
         description: 'Extra kernel args — space-separated key=value pairs (e.g. cma=256M hugepages=64)'
         required: false
@@ -100,7 +104,7 @@ jobs:
           UTIL=$(grep '^UTIL_LINUX_VERSION' Makefile | awk '{print $NF}')
           NVME=$(grep '^NVME_CLI_VERSION' Makefile | awk '{print $NF}')
           TAILSCALE=$(grep '^TAILSCALE_VERSION' Makefile | awk '{print $NF}')
-          OVERLAY_IMAGE=$(grep '^CUSTOM_OVERLAY_IMAGE' Makefile | awk '{print $NF}')
+          OVERLAY_IMAGE_DEFAULT=$(grep '^CUSTOM_OVERLAY_IMAGE' Makefile | awk '{print $NF}')
 
           # Installer base: workflow_dispatch input wins, else env default.
           INSTALLER_BASE_INPUT="${{ github.event.inputs.installer_base }}"
@@ -108,6 +112,14 @@ jobs:
             INSTALLER_BASE="${INSTALLER_BASE_INPUT}"
           else
             INSTALLER_BASE="${RPI_INSTALLER_BASE_DEFAULT}"
+          fi
+
+          # Overlay image: workflow_dispatch input wins, else Makefile default.
+          OVERLAY_IMAGE_INPUT="${{ github.event.inputs.overlay_image }}"
+          if [[ -n "${OVERLAY_IMAGE_INPUT}" ]]; then
+            OVERLAY_IMAGE="${OVERLAY_IMAGE_INPUT}"
+          else
+            OVERLAY_IMAGE="${OVERLAY_IMAGE_DEFAULT}"
           fi
 
           echo "overlay_image=${OVERLAY_IMAGE}" >> "$GITHUB_OUTPUT"
