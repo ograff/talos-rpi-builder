@@ -1,0 +1,168 @@
+name: Build RPi Kernel Package (reusable)
+
+# Builds only the siderolabs/pkgs kernel image with the Raspberry Pi vendor
+# kernel source (raspberrypi/linux rpi-6.18.y) and the Pi-tuned config.
+# Publishes a content-hashed tag so callers can skip rebuilds when nothing
+# that affects the kernel has changed.
+#
+# Output tag: ghcr.io/<owner>/kernel-rpi:<linux_ref>-<config_hash>
+#   where config_hash = first 8 chars of sha256(config-arm64-rpi || pkgs-patch || linux_ref)
+
+on:
+  workflow_call:
+    inputs:
+      pkg_version:
+        description: 'siderolabs/pkgs ref'
+        required: true
+        type: string
+      linux_ref:
+        description: 'raspberrypi/linux ref pinned by the vendored Pkgfile patch'
+        required: true
+        type: string
+      kernel_image:
+        description: 'Fully-qualified kernel image ref to publish (e.g. ghcr.io/<owner>/kernel-rpi:<tag>)'
+        required: true
+        type: string
+      runner:
+        description: 'GitHub Actions runner'
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
+    outputs:
+      kernel_image:
+        description: 'Fully-qualified kernel image ref that was built and pushed'
+        value: ${{ jobs.build.outputs.kernel_image }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      kernel_image: ${{ steps.publish.outputs.kernel_image }}
+    env:
+      REGISTRY: ghcr.io
+      REGISTRY_USERNAME: ${{ github.repository_owner }}
+
+    steps:
+      - name: Preflight disk cleanup (self-hosted safe)
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
+          if [[ -d /actions-runner/_diag ]]; then
+            sudo find /actions-runner/_diag -type f -name '*.log' -mtime +2 -print -delete || true
+          fi
+          if [[ -d /actions-runner/_work/_temp ]]; then
+            sudo rm -rf /actions-runner/_work/_temp/* || true
+          fi
+          echo "Disk after cleanup:"
+          df -h
+
+      - name: Checkout talos-rpi-builder
+        uses: actions/checkout@v4
+
+      - name: Set up Git identity (required for git am)
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
+        with:
+          version: v0.20.5
+
+      - name: Assert vendored Pi-fork patch matches linux_ref
+        run: |
+          set -euo pipefail
+          PATCH=patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+          REF="${{ inputs.linux_ref }}"
+          if ! grep -q "linux_version: ${REF}" "$PATCH"; then
+            echo "ERROR: vendored patch does not pin linux_version to ${REF}" >&2
+            grep -E '^\+.*linux_version:' "$PATCH" >&2 || true
+            exit 1
+          fi
+          echo "OK: vendored patch pins raspberrypi/linux ${REF}"
+
+      # ── siderolabs/pkgs: Pi-vendor kernel ─────────────────────────────────
+
+      - name: Clone siderolabs/pkgs
+        run: |
+          git clone https://github.com/siderolabs/pkgs.git checkouts/pkgs
+          PKG_REF="${{ inputs.pkg_version }}"
+          [[ "$PKG_REF" =~ -[0-9]+-g([0-9a-f]+)$ ]] && PKG_REF="${BASH_REMATCH[1]}"
+          git -C checkouts/pkgs -c advice.detachedHead=false checkout "$PKG_REF"
+
+      - name: Apply Pi-fork Pkgfile patch (swap kernel source to raspberrypi/linux)
+        run: |
+          set -euo pipefail
+          cp patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch checkouts/pkgs/
+          git -C checkouts/pkgs am 0001-Patched-for-Raspberry-Pi-5.patch
+          rm -f checkouts/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+          echo "Pkgfile head after patch:"
+          grep -E '^\s*linux_(version|sha256):' checkouts/pkgs/Pkgfile
+
+      - name: Drop in Pi-tuned kernel/build/config-arm64
+        run: |
+          set -euo pipefail
+          install -m 0644 patches/pkgs/config-arm64-rpi checkouts/pkgs/kernel/build/config-arm64
+          echo "config-arm64 head after drop-in:"
+          head -3 checkouts/pkgs/kernel/build/config-arm64
+
+      - name: Build kernel (siderolabs/pkgs, Pi vendor source)
+        run: |
+          cd checkouts/pkgs
+          make \
+            REGISTRY=${{ env.REGISTRY }} \
+            USERNAME=${{ env.REGISTRY_USERNAME }} \
+            PUSH=true \
+            PLATFORM=linux/arm64 \
+            kernel
+
+      - name: Get pkgs tag
+        id: pkgs
+        run: |
+          echo "tag=$(cd checkouts/pkgs && git describe --tag --always --dirty --match 'v[0-9]*')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish kernel under content-hashed tag
+        id: publish
+        run: |
+          set -euo pipefail
+          SRC="${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel:${{ steps.pkgs.outputs.tag }}"
+          DST="${{ inputs.kernel_image }}"
+          echo "Copying $SRC -> $DST"
+          crane copy "$SRC" "$DST"
+          echo "kernel_image=$DST" >> "$GITHUB_OUTPUT"
+
+      - name: Postflight BuildKit cleanup
+        if: always()
+        run: |
+          set +e
+          docker ps -a --format '{{.Names}}' | grep '^buildx_buildkit_' | xargs -r docker rm -f
+          docker volume ls --format '{{.Name}}' | grep '^buildx_buildkit_.*_state$' | xargs -r docker volume rm
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+          df -h
+
+      - name: Summary
+        run: |
+          echo "## Kernel package built" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| pkgs ref | \`${{ inputs.pkg_version }}\` @ \`${{ steps.pkgs.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| kernel source | \`raspberrypi/linux\` rpi-6.18.y @ \`${{ inputs.linux_ref }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Published as | \`${{ inputs.kernel_image }}\` |" >> "$GITHUB_STEP_SUMMARY"

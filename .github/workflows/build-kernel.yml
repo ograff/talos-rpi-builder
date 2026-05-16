@@ -4,10 +4,10 @@ name: Build RPi-Kernel Installer Base
 # Raspberry Pi vendor kernel (raspberrypi/linux rpi-6.18.y) instead of
 # the upstream stable kernel.
 #
-# Why: BCM2712 + RP1 boards (CM5) get thousands of platform fixes only
-# carried in the Pi vendor fork. The macb TX-stall fixes are already
-# present upstream at the pinned linux_ref, so no extra kernel patches
-# are applied here.
+# The kernel package itself is built by the reusable build-kernel-pkg.yml
+# workflow and tagged by content hash, so reruns that don't touch the
+# kernel config / pkgs patch / linux_ref skip the kernel rebuild and
+# reuse the published image.
 #
 # Output: ghcr.io/<owner>/rpi-talos:<installer_tag>
 #   default tag: v1.13.0-k-rpi
@@ -35,6 +35,15 @@ on:
         description: 'Output image tag (e.g. v1.13.0-k-rpi)'
         required: false
         default: 'v1.13.0-k-rpi'
+      kernel_image:
+        description: 'Optional: fully-qualified kernel image ref to use (e.g. ghcr.io/me/kernel-rpi:my-tag). If set, skips both cache lookup and kernel rebuild.'
+        required: false
+        default: ''
+      force_rebuild_kernel:
+        description: 'Force a kernel rebuild even if the content-hashed kernel image is already published'
+        required: false
+        type: boolean
+        default: false
       runner:
         description: 'GitHub Actions runner (e.g. ubuntu-24.04-arm, mac-runner)'
         required: false
@@ -44,14 +53,151 @@ on:
       - 'v*-kernel'
 
 jobs:
-  build:
+  # ── Resolve versions + decide whether the kernel needs rebuilding ─────────
+  resolve:
     runs-on: ${{ inputs.runner || 'ubuntu-24.04-arm' }}
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      talos_version: ${{ steps.ver.outputs.talos_version }}
+      pkg_version: ${{ steps.ver.outputs.pkg_version }}
+      linux_ref: ${{ steps.ver.outputs.linux_ref }}
+      installer_tag: ${{ steps.ver.outputs.installer_tag }}
+      runner: ${{ steps.ver.outputs.runner }}
+      kernel_image: ${{ steps.kernel.outputs.kernel_image }}
+      kernel_cached: ${{ steps.kernel.outputs.kernel_cached }}
+      kernel_user_supplied: ${{ steps.kernel.outputs.kernel_user_supplied }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up crane
+        uses: imjasonh/setup-crane@v0.4
+        with:
+          version: v0.20.5
+
+      - name: Log in to GHCR (for manifest probe)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve versions
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${{ github.ref_name }}"
+            TALOS_VERSION=$(echo "$TAG" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+')
+            PKG_VERSION="v1.13.0"
+            LINUX_REF="79dc190b12f9"
+            INSTALLER_TAG="${TALOS_VERSION}-k-rpi"
+            RUNNER="ubuntu-24.04-arm"
+          else
+            TALOS_VERSION="${{ github.event.inputs.talos_version }}"
+            PKG_VERSION="${{ github.event.inputs.pkg_version }}"
+            LINUX_REF="${{ github.event.inputs.linux_ref }}"
+            INSTALLER_TAG="${{ github.event.inputs.installer_tag }}"
+            RUNNER="${{ github.event.inputs.runner }}"
+          fi
+          echo "talos_version=${TALOS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "linux_ref=${LINUX_REF}" >> "$GITHUB_OUTPUT"
+          echo "installer_tag=${INSTALLER_TAG}" >> "$GITHUB_OUTPUT"
+          echo "runner=${RUNNER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: Talos=${TALOS_VERSION}  pkgs=${PKG_VERSION}  linux-ref=${LINUX_REF}  tag=${INSTALLER_TAG}  runner=${RUNNER}"
+
+      - name: Assert vendored Pi-fork patch matches linux_ref
+        run: |
+          set -euo pipefail
+          PATCH=patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+          REF="${{ steps.ver.outputs.linux_ref }}"
+          if ! grep -q "linux_version: ${REF}" "$PATCH"; then
+            echo "ERROR: vendored patch does not pin linux_version to ${REF}" >&2
+            grep -E '^\+.*linux_version:' "$PATCH" >&2 || true
+            exit 1
+          fi
+          echo "OK: vendored patch pins raspberrypi/linux ${REF}"
+
+      - name: Decide kernel image (user override / cache hit / rebuild)
+        id: kernel
+        env:
+          USER_KERNEL_IMAGE: ${{ github.event.inputs.kernel_image }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild_kernel }}
+          LINUX_REF: ${{ steps.ver.outputs.linux_ref }}
+        run: |
+          set -euo pipefail
+
+          # 1) User-supplied override wins.
+          if [[ -n "${USER_KERNEL_IMAGE:-}" ]]; then
+            echo "User supplied kernel_image: ${USER_KERNEL_IMAGE}"
+            echo "kernel_image=${USER_KERNEL_IMAGE}" >> "$GITHUB_OUTPUT"
+            echo "kernel_cached=true"            >> "$GITHUB_OUTPUT"
+            echo "kernel_user_supplied=true"     >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "kernel_user_supplied=false" >> "$GITHUB_OUTPUT"
+
+          # 2) Compute content-hashed tag. Inputs that affect the kernel:
+          #    - linux_ref (kernel source revision)
+          #    - patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch (Pkgfile delta)
+          #    - patches/pkgs/config-arm64-rpi (kernel .config)
+          HASH=$(
+            {
+              echo "linux_ref:${LINUX_REF}"
+              sha256sum patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+              sha256sum patches/pkgs/config-arm64-rpi
+            } | sha256sum | cut -c1-8
+          )
+          TAG="${LINUX_REF}-${HASH}"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/kernel-rpi:${TAG}"
+          echo "Content-hashed kernel image: ${IMAGE}"
+          echo "kernel_image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+          # 3) Probe GHCR — skip rebuild if the tag already exists, unless forced.
+          if [[ "${FORCE_REBUILD}" == "true" ]]; then
+            echo "force_rebuild_kernel=true; will rebuild even if cached"
+            echo "kernel_cached=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if crane manifest "${IMAGE}" >/dev/null 2>&1; then
+            echo "Cache hit: ${IMAGE} already exists"
+            echo "kernel_cached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Cache miss: ${IMAGE} not in registry"
+            echo "kernel_cached=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Build the kernel package only if no cached image is available ─────────
+  build-kernel:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.kernel_cached != 'true' }}
+    uses: ./.github/workflows/build-kernel-pkg.yml
+    with:
+      pkg_version: ${{ needs.resolve.outputs.pkg_version }}
+      linux_ref: ${{ needs.resolve.outputs.linux_ref }}
+      kernel_image: ${{ needs.resolve.outputs.kernel_image }}
+      runner: ${{ needs.resolve.outputs.runner }}
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+
+  # ── Build imager + installer-base against the resolved kernel image ───────
+  build-installer:
+    needs: [resolve, build-kernel]
+    # Run if kernel is cached (build-kernel skipped) or if it just built successfully.
+    if: ${{ always() && needs.resolve.result == 'success' && (needs.build-kernel.result == 'success' || needs.build-kernel.result == 'skipped') }}
+    runs-on: ${{ needs.resolve.outputs.runner }}
     permissions:
       contents: read
       packages: write
     env:
       REGISTRY: ghcr.io
       REGISTRY_USERNAME: ${{ github.repository_owner }}
+      KERNEL_IMAGE: ${{ needs.resolve.outputs.kernel_image }}
 
     steps:
       - name: Preflight disk cleanup (self-hosted safe)
@@ -93,94 +239,16 @@ jobs:
         with:
           version: v0.20.5
 
-      - name: Resolve versions
-        id: ver
-        run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            # Tag format: v1.13.0-kernel → extract v1.13.0
-            TAG="${{ github.ref_name }}"
-            TALOS_VERSION=$(echo "$TAG" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+')
-            PKG_VERSION="v1.13.0"
-            LINUX_REF="79dc190b12f9"
-            INSTALLER_TAG="${TALOS_VERSION}-k-rpi"
-          else
-            TALOS_VERSION="${{ github.event.inputs.talos_version }}"
-            PKG_VERSION="${{ github.event.inputs.pkg_version }}"
-            LINUX_REF="${{ github.event.inputs.linux_ref }}"
-            INSTALLER_TAG="${{ github.event.inputs.installer_tag }}"
-          fi
-          echo "talos_version=${TALOS_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "linux_ref=${LINUX_REF}" >> "$GITHUB_OUTPUT"
-          echo "installer_tag=${INSTALLER_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved: Talos=${TALOS_VERSION}  pkgs=${PKG_VERSION}  linux-ref=${LINUX_REF}  tag=${INSTALLER_TAG}"
-
-      - name: Assert vendored Pi-fork patch matches linux_ref
+      - name: Confirm kernel image is reachable
         run: |
           set -euo pipefail
-          PATCH=patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
-          REF="${{ steps.ver.outputs.linux_ref }}"
-          if ! grep -q "linux_version: ${REF}" "$PATCH"; then
-            echo "ERROR: vendored patch does not pin linux_version to ${REF}" >&2
-            grep -E '^\+.*linux_version:' "$PATCH" >&2 || true
-            exit 1
-          fi
-          echo "OK: vendored patch pins raspberrypi/linux ${REF}"
-
-      # ── siderolabs/pkgs: Pi-vendor kernel ─────────────────────────────────
-
-      - name: Clone siderolabs/pkgs
-        run: |
-          git clone https://github.com/siderolabs/pkgs.git checkouts/pkgs
-          # Resolve git-describe refs (e.g. v1.13.0-58-g86d6af1 → 86d6af1)
-          PKG_REF="${{ steps.ver.outputs.pkg_version }}"
-          [[ "$PKG_REF" =~ -[0-9]+-g([0-9a-f]+)$ ]] && PKG_REF="${BASH_REMATCH[1]}"
-          git -C checkouts/pkgs -c advice.detachedHead=false checkout "$PKG_REF"
-
-      - name: Apply Pi-fork Pkgfile patch (swap kernel source to raspberrypi/linux)
-        run: |
-          set -euo pipefail
-          cp patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch checkouts/pkgs/
-          git -C checkouts/pkgs am 0001-Patched-for-Raspberry-Pi-5.patch
-          rm -f checkouts/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
-          echo "Pkgfile head after patch:"
-          grep -E '^\s*linux_(version|sha256):' checkouts/pkgs/Pkgfile
-
-      - name: Drop in Pi-tuned kernel/build/config-arm64
-        run: |
-          set -euo pipefail
-          install -m 0644 patches/pkgs/config-arm64-rpi checkouts/pkgs/kernel/build/config-arm64
-          echo "config-arm64 head after drop-in:"
-          head -3 checkouts/pkgs/kernel/build/config-arm64
-
-      # macb TX-stall patches are present upstream in raspberrypi/linux at the
-      # pinned linux_ref, so no kernel patches need to be applied on top.
-
-      - name: Build kernel (siderolabs/pkgs, Pi vendor source)
-        run: |
-          cd checkouts/pkgs
-          make \
-            REGISTRY=${{ env.REGISTRY }} \
-            USERNAME=${{ env.REGISTRY_USERNAME }} \
-            PUSH=true \
-            PLATFORM=linux/arm64 \
-            kernel
-
-      - name: Get pkgs tag
-        id: pkgs
-        run: |
-          echo "tag=$(cd checkouts/pkgs && git describe --tag --always --dirty --match 'v[0-9]*')" >> "$GITHUB_OUTPUT"
-
-      - name: Publish kernel as kernel-rpi
-        run: |
-          crane copy \
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel:${{ steps.pkgs.outputs.tag }} \
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel-rpi:${{ steps.pkgs.outputs.tag }}
+          echo "Using kernel image: ${KERNEL_IMAGE}"
+          crane manifest "${KERNEL_IMAGE}" >/dev/null
 
       - name: Clone siderolabs/talos
         run: |
           git clone -c advice.detachedHead=false \
-            --branch "${{ steps.ver.outputs.talos_version }}" \
+            --branch "${{ needs.resolve.outputs.talos_version }}" \
             https://github.com/siderolabs/talos.git checkouts/talos
 
       - name: Apply RPi modules-arm64.txt patch to talos
@@ -196,11 +264,11 @@ jobs:
         run: |
           cd checkouts/talos
           make \
-            TAG=${{ steps.ver.outputs.talos_version }}-rpi \
+            TAG=${{ needs.resolve.outputs.talos_version }}-rpi \
             REGISTRY=${{ env.REGISTRY }} \
             USERNAME=${{ env.REGISTRY_USERNAME }} \
             PUSH=true \
-            PKG_KERNEL=${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel-rpi:${{ steps.pkgs.outputs.tag }} \
+            PKG_KERNEL=${KERNEL_IMAGE} \
             INSTALLER_ARCH=arm64 \
             PLATFORM=linux/arm64 \
             imager
@@ -209,11 +277,11 @@ jobs:
         run: |
           cd checkouts/talos
           make \
-            TAG=${{ steps.ver.outputs.talos_version }}-rpi \
+            TAG=${{ needs.resolve.outputs.talos_version }}-rpi \
             REGISTRY=${{ env.REGISTRY }} \
             USERNAME=${{ env.REGISTRY_USERNAME }} \
             PUSH=true \
-            PKG_KERNEL=${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel-rpi:${{ steps.pkgs.outputs.tag }} \
+            PKG_KERNEL=${KERNEL_IMAGE} \
             INSTALLER_ARCH=arm64 \
             PLATFORM=linux/arm64 \
             installer-base
@@ -223,16 +291,16 @@ jobs:
       - name: Tag imager as imager-rpi
         run: |
           crane copy \
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager:${{ steps.ver.outputs.talos_version }}-rpi \
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ steps.ver.outputs.talos_version }}-rpi
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager:${{ needs.resolve.outputs.talos_version }}-rpi \
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ needs.resolve.outputs.talos_version }}-rpi
 
       # ── Publish under stable rpi-talos name ───────────────────────────────
 
       - name: Publish as rpi-talos
         run: |
           crane copy \
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/installer-base:${{ steps.ver.outputs.talos_version }}-rpi \
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ steps.ver.outputs.installer_tag }}
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/installer-base:${{ needs.resolve.outputs.talos_version }}-rpi \
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ needs.resolve.outputs.installer_tag }}
 
       - name: Postflight BuildKit cleanup
         if: always()
@@ -246,15 +314,23 @@ jobs:
 
       - name: Summary
         run: |
+          KERNEL_SOURCE=""
+          if [[ "${{ needs.resolve.outputs.kernel_user_supplied }}" == "true" ]]; then
+            KERNEL_SOURCE="user-supplied"
+          elif [[ "${{ needs.build-kernel.result }}" == "skipped" ]]; then
+            KERNEL_SOURCE="cache hit (skipped rebuild)"
+          else
+            KERNEL_SOURCE="freshly built"
+          fi
           echo "## RPi-Kernel Installer Base Built" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| | |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Talos | \`${{ steps.ver.outputs.talos_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| pkgs | \`${{ steps.ver.outputs.pkg_version }}\` @ \`${{ steps.pkgs.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| kernel source | \`raspberrypi/linux\` rpi-6.18.y @ \`${{ steps.ver.outputs.linux_ref }}\` (vendored Pkgfile patch) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| macb patches | none — fixes already upstream in raspberrypi/linux at pinned ref |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Installer base | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ steps.ver.outputs.installer_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Patched imager | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ steps.ver.outputs.talos_version }}-rpi\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Talos | \`${{ needs.resolve.outputs.talos_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| pkgs | \`${{ needs.resolve.outputs.pkg_version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| kernel source | \`raspberrypi/linux\` rpi-6.18.y @ \`${{ needs.resolve.outputs.linux_ref }}\` (vendored Pkgfile patch) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| kernel image | \`${KERNEL_IMAGE}\` (${KERNEL_SOURCE}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Installer base | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/rpi-talos:${{ needs.resolve.outputs.installer_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Patched imager | \`${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/imager-rpi:${{ needs.resolve.outputs.talos_version }}-rpi\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "publish.yml will use the patched imager automatically (kernel comes from inside the imager, not installer-base)." >> "$GITHUB_STEP_SUMMARY"
