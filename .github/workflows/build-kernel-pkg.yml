@@ -32,6 +32,28 @@ on:
       kernel_image:
         description: 'Fully-qualified kernel image ref that was built and pushed'
         value: ${{ jobs.build.outputs.kernel_image }}
+  workflow_dispatch:
+    inputs:
+      pkg_version:
+        description: 'siderolabs/pkgs ref'
+        required: false
+        type: string
+        default: 'v1.13.0'
+      linux_ref:
+        description: 'raspberrypi/linux ref pinned by the vendored Pkgfile patch'
+        required: false
+        type: string
+        default: '79dc190b12f9'
+      kernel_image:
+        description: 'Fully-qualified kernel image ref to publish (leave blank to derive a content-hashed tag from linux_ref + patches/pkgs/*)'
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: 'GitHub Actions runner'
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
 
 jobs:
   build:
@@ -84,6 +106,28 @@ jobs:
         uses: imjasonh/setup-crane@v0.4
         with:
           version: v0.20.5
+
+      - name: Resolve kernel image ref
+        id: resolve
+        env:
+          INPUT_KERNEL_IMAGE: ${{ inputs.kernel_image }}
+          LINUX_REF: ${{ inputs.linux_ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_KERNEL_IMAGE:-}" ]]; then
+            IMAGE="${INPUT_KERNEL_IMAGE}"
+          else
+            HASH=$(
+              {
+                echo "linux_ref:${LINUX_REF}"
+                sha256sum patches/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+                sha256sum patches/pkgs/config-arm64-rpi
+              } | sha256sum | cut -c1-8
+            )
+            IMAGE="ghcr.io/${{ github.repository_owner }}/kernel-rpi:${LINUX_REF}-${HASH}"
+          fi
+          echo "Resolved kernel image: ${IMAGE}"
+          echo "kernel_image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Assert vendored Pi-fork patch matches linux_ref
         run: |
@@ -142,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           SRC="${{ env.REGISTRY }}/${{ env.REGISTRY_USERNAME }}/kernel:${{ steps.pkgs.outputs.tag }}"
-          DST="${{ inputs.kernel_image }}"
+          DST="${{ steps.resolve.outputs.kernel_image }}"
           echo "Copying $SRC -> $DST"
           crane copy "$SRC" "$DST"
           echo "kernel_image=$DST" >> "$GITHUB_OUTPUT"
@@ -165,4 +209,4 @@ jobs:
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| pkgs ref | \`${{ inputs.pkg_version }}\` @ \`${{ steps.pkgs.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| kernel source | \`raspberrypi/linux\` rpi-6.18.y @ \`${{ inputs.linux_ref }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Published as | \`${{ inputs.kernel_image }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Published as | \`${{ steps.resolve.outputs.kernel_image }}\` |" >> "$GITHUB_STEP_SUMMARY"
