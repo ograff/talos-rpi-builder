@@ -11,7 +11,7 @@ diff --git a/hack/modules-arm64.txt b/hack/modules-arm64.txt
 index 8df29effd..27a59e717 100644
 --- a/hack/modules-arm64.txt
 +++ b/hack/modules-arm64.txt
-@@ -1,239 +1,214 @@
+@@ -1,239 +1,213 @@
 -kernel/arch/arm64/lib/xor-neon.ko
 +modules.builtin.bin
 +modules.builtin.modinfo
@@ -45,7 +45,6 @@ index 8df29effd..27a59e717 100644
 -kernel/drivers/block/nbd.ko
 -kernel/drivers/block/ublk_drv.ko
 +kernel/crypto/xxhash_generic.ko
-+kernel/crypto/zstd.ko
 +kernel/net/ipv4/ip_gre.ko
 +kernel/net/tls/tls.ko
 +kernel/net/openvswitch/vport-gre.ko
