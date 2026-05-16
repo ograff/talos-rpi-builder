@@ -264,9 +264,6 @@ index 8df29effd..27a59e717 100644
 +kernel/drivers/net/usb/qmi_wwan.ko
 +kernel/drivers/net/usb/sr9700.ko
 +kernel/drivers/net/usb/lg-vl600.ko
-+kernel/drivers/net/usb/int51x1.ko
-+kernel/drivers/net/usb/cdc_ncm.ko
-+kernel/drivers/net/usb/cdc_ether.ko
  kernel/drivers/net/vrf.ko
 -kernel/drivers/nvme/common/nvme-auth.ko
 -kernel/drivers/nvme/host/nvme-rdma.ko
@@ -287,18 +284,14 @@ index 8df29effd..27a59e717 100644
 -kernel/drivers/perf/hisilicon/hisi_uncore_uc_pmu.ko
 -kernel/drivers/perf/hisilicon/hns3_pmu.ko
 +kernel/drivers/irqchip/irq-imx-mu-msi.ko
-+kernel/drivers/input/misc/uinput.ko
 +kernel/drivers/mailbox/bcm-flexrm-mailbox.ko
 +kernel/drivers/hwmon/i5k_amb.ko
-+kernel/drivers/hid/hid-lg-g15.ko
-+kernel/drivers/hid/hid-logitech.ko
 +kernel/drivers/leds/led-class-multicolor.ko
  kernel/drivers/scsi/fcoe/libfcoe.ko
 -kernel/drivers/scsi/hisi_sas/hisi_sas_main.ko
 +kernel/drivers/scsi/mpi3mr/mpi3mr.ko
 +kernel/drivers/scsi/qla2xxx/qla2xxx.ko
 +kernel/drivers/scsi/lpfc/lpfc.ko
-+kernel/drivers/scsi/qedf/qedf.ko
  kernel/drivers/scsi/hisi_sas/hisi_sas_v1_hw.ko
 -kernel/drivers/scsi/hisi_sas/hisi_sas_v2_hw.ko
 +kernel/drivers/scsi/hisi_sas/hisi_sas_main.ko
@@ -321,7 +314,6 @@ index 8df29effd..27a59e717 100644
 -kernel/drivers/usb/serial/pl2303.ko
 +kernel/drivers/thunderbolt/thunderbolt.ko
 +kernel/drivers/vdpa/vdpa.ko
- kernel/drivers/vdpa/mlx5/mlx5_vdpa.ko
  kernel/drivers/vdpa/octeon_ep/octep_vdpa.ko
  kernel/drivers/vdpa/solidrun/snet_vdpa.ko
 +kernel/drivers/vdpa/vdpa_sim/vdpa_sim.ko
@@ -397,8 +389,8 @@ index 8df29effd..27a59e717 100644
 +kernel/drivers/media/mc/mc.ko
 +kernel/arch/arm64/lib/xor-neon.ko
 +kernel/lib/raid6/raid6_pq.ko
- kernel/lib/objagg.ko
- kernel/lib/parman.ko
+-kernel/lib/objagg.ko
+-kernel/lib/parman.ko
 -kernel/lib/raid6/raid6_pq.ko
 -kernel/net/ipv4/ip_gre.ko
 -kernel/net/ipv6/ip6_gre.ko
