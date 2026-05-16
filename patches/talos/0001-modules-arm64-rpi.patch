@@ -11,7 +11,7 @@ diff --git a/hack/modules-arm64.txt b/hack/modules-arm64.txt
 index 8df29effd..27a59e717 100644
 --- a/hack/modules-arm64.txt
 +++ b/hack/modules-arm64.txt
-@@ -1,239 +1,220 @@
+@@ -1,239 +1,214 @@
 -kernel/arch/arm64/lib/xor-neon.ko
 +modules.builtin.bin
 +modules.builtin.modinfo
@@ -49,10 +49,6 @@ index 8df29effd..27a59e717 100644
 +kernel/net/ipv4/ip_gre.ko
 +kernel/net/tls/tls.ko
 +kernel/net/openvswitch/vport-gre.ko
-+kernel/drivers/infiniband/sw/rxe/rdma_rxe.ko
-+kernel/drivers/infiniband/hw/mlx4/mlx4_ib.ko
-+kernel/drivers/infiniband/hw/mlx5/mlx5_ib.ko
-+kernel/drivers/infiniband/hw/hns/hns-roce-hw-v2.ko
 +kernel/drivers/misc/bcm2835_smi.ko
  kernel/drivers/crypto/tegra/tegra-se.ko
 -kernel/drivers/gpu/drm/drm_buddy.ko
@@ -139,12 +135,10 @@ index 8df29effd..27a59e717 100644
 -kernel/drivers/mmc/host/sdhci-tegra.ko
 -kernel/drivers/mmc/host/sdhci-uhs2.ko
 -kernel/drivers/mmc/host/sdhci-xenon-driver.ko
-+kernel/drivers/nvme/host/nvme-rdma.ko
 +kernel/drivers/nvme/target/nvme-loop.ko
 +kernel/drivers/nvme/target/nvmet-fc.ko
 +kernel/drivers/nvme/target/nvmet.ko
 +kernel/drivers/nvme/target/nvmet-tcp.ko
-+kernel/drivers/nvme/target/nvmet-rdma.ko
 +kernel/drivers/nvme/common/nvme-auth.ko
 +kernel/drivers/net/mdio/mdio-mux-meson-gxl.ko
 +kernel/drivers/net/thunderbolt/thunderbolt_net.ko
