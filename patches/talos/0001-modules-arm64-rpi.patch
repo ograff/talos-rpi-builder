@@ -4,14 +4,14 @@ Date: Wed, 8 Apr 2026 12:20:17 -0500
 Subject: [PATCH] Patched for Raspberry Pi 5
 
 ---
- hack/modules-arm64.txt | 376 ++++++++++++++++++++--------------------
- 1 file changed, 177 insertions(+), 197 deletions(-)
+ hack/modules-arm64.txt | 349 +++++++++++++++++++---------------------
+ 1 file changed, 150 insertions(+), 197 deletions(-)
 
 diff --git a/hack/modules-arm64.txt b/hack/modules-arm64.txt
 index 8df29effd..27a59e717 100644
 --- a/hack/modules-arm64.txt
 +++ b/hack/modules-arm64.txt
-@@ -1,239 +1,190 @@
+@@ -1,239 +1,163 @@
 -kernel/arch/arm64/lib/xor-neon.ko
 +modules.builtin.bin
 +modules.builtin.modinfo
@@ -237,33 +237,6 @@ index 8df29effd..27a59e717 100644
 +kernel/drivers/net/ethernet/hisilicon/hns_mdio.ko
 +kernel/drivers/net/ethernet/hisilicon/hix5hd2_gmac.ko
 +kernel/drivers/net/phy/ax88796b.ko
-+kernel/drivers/net/usb/sr9800.ko
-+kernel/drivers/net/usb/rndis_host.ko
-+kernel/drivers/net/usb/cdc_mbim.ko
-+kernel/drivers/net/usb/zaurus.ko
-+kernel/drivers/net/usb/kalmia.ko
-+kernel/drivers/net/usb/usbnet.ko
-+kernel/drivers/net/usb/dm9601.ko
-+kernel/drivers/net/usb/plusb.ko
-+kernel/drivers/net/usb/gl620a.ko
-+kernel/drivers/net/usb/cdc_subset.ko
-+kernel/drivers/net/usb/smsc75xx.ko
-+kernel/drivers/net/usb/cx82310_eth.ko
-+kernel/drivers/net/usb/mcs7830.ko
-+kernel/drivers/net/usb/ch9200.ko
-+kernel/drivers/net/usb/smsc95xx.ko
-+kernel/drivers/net/usb/huawei_cdc_ncm.ko
-+kernel/drivers/net/usb/r8153_ecm.ko
-+kernel/drivers/net/usb/ax88179_178a.ko
-+kernel/drivers/net/usb/cdc_eem.ko
-+kernel/drivers/net/usb/sierra_net.ko
-+kernel/drivers/net/usb/asix.ko
-+kernel/drivers/net/usb/net1080.ko
-+kernel/drivers/net/usb/cdc-phonet.ko
-+kernel/drivers/net/usb/aqc111.ko
-+kernel/drivers/net/usb/qmi_wwan.ko
-+kernel/drivers/net/usb/sr9700.ko
-+kernel/drivers/net/usb/lg-vl600.ko
  kernel/drivers/net/vrf.ko
 -kernel/drivers/nvme/common/nvme-auth.ko
 -kernel/drivers/nvme/host/nvme-rdma.ko
