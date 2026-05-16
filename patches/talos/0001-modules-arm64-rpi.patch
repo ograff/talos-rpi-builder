@@ -4,14 +4,14 @@ Date: Wed, 8 Apr 2026 12:20:17 -0500
 Subject: [PATCH] Patched for Raspberry Pi 5
 
 ---
- hack/modules-arm64.txt | 376 ++++++++++++++++++++---------------------
+ hack/modules-arm64.txt | 376 ++++++++++++++++++++--------------------
  1 file changed, 179 insertions(+), 197 deletions(-)
 
 diff --git a/hack/modules-arm64.txt b/hack/modules-arm64.txt
 index 8df29effd..27a59e717 100644
 --- a/hack/modules-arm64.txt
 +++ b/hack/modules-arm64.txt
-@@ -1,238 +1,220 @@
+@@ -1,239 +1,220 @@
 -kernel/arch/arm64/lib/xor-neon.ko
 +modules.builtin.bin
 +modules.builtin.modinfo
@@ -91,6 +91,7 @@ index 8df29effd..27a59e717 100644
 -kernel/drivers/hid/hid-logitech.ko
 -kernel/drivers/hid/hid-microsoft.ko
 -kernel/drivers/hid/hid-monterey.ko
+-kernel/drivers/hid/hid-multitouch.ko
 -kernel/drivers/hid/hid-petalynx.ko
 -kernel/drivers/hid/hid-pl.ko
 -kernel/drivers/hid/hid-samsung.ko
@@ -429,6 +430,3 @@ index 8df29effd..27a59e717 100644
  modules.builtin
 -modules.builtin.modinfo
 -modules.order
--- 
-2.50.1 (Apple Git-155)
-
