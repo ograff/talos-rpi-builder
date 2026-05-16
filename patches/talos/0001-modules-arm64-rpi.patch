@@ -5,13 +5,13 @@ Subject: [PATCH] Patched for Raspberry Pi 5
 
 ---
  hack/modules-arm64.txt | 376 ++++++++++++++++++++--------------------
- 1 file changed, 179 insertions(+), 197 deletions(-)
+ 1 file changed, 177 insertions(+), 197 deletions(-)
 
 diff --git a/hack/modules-arm64.txt b/hack/modules-arm64.txt
 index 8df29effd..27a59e717 100644
 --- a/hack/modules-arm64.txt
 +++ b/hack/modules-arm64.txt
-@@ -1,239 +1,213 @@
+@@ -1,239 +1,211 @@
 -kernel/arch/arm64/lib/xor-neon.ko
 +modules.builtin.bin
 +modules.builtin.modinfo
@@ -61,8 +61,6 @@ index 8df29effd..27a59e717 100644
 +kernel/drivers/gpu/drm/drm_suballoc_helper.ko
 +kernel/drivers/gpu/drm/drm_buddy.ko
 +kernel/drivers/gpu/drm/tegra/tegra-drm.ko
-+kernel/drivers/gpu/drm/amd/amdxcp/amdxcp.ko
-+kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko
  kernel/drivers/gpu/drm/drm_vram_helper.ko
  kernel/drivers/gpu/drm/hisilicon/hibmc/hibmc-drm.ko
 -kernel/drivers/gpu/drm/scheduler/gpu-sched.ko
